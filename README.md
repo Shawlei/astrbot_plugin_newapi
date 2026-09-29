@@ -9,6 +9,8 @@ AstrBot 插件：在 QQ 群中使用 NewAPI 账号，支持 **账号绑定 / 每
 | 命令 | 权限 | 说明 |
 | --- | --- | --- |
 | `/newapi绑定 <用户名> <密码>` | 用户 | 验证后绑定 QQ 与 NewAPI 账号（默认仅私聊可用） |
+| `/绑定 <ID>` | 用户 | 按用户 ID 数字直接绑定（如 `/绑定 1`），绑定成功后自动更换到配置的目标分组 |
+| `/注册` | 用户 | 群内自助注册：QQ 号作为账号，随机 8 位密码私聊发送；受最低群等级门槛限制 |
 | `/newapi解绑` | 用户 | 解除自己的绑定 |
 | `/签到`（`/打卡`） | 用户 | 每日签到，随机额度直接充入账号 |
 | `/余额`（`/查询余额`） | 用户 | 查询剩余额度 / 累计消耗 / 调用次数 |
@@ -37,6 +39,11 @@ AstrBot 插件：在 QQ 群中使用 NewAPI 账号，支持 **账号绑定 / 每
 | `checkin_enabled` | `true` | 签到开关 |
 | `checkin_min_usd` / `checkin_max_usd` | `0.1` / `0.5` | 签到随机额度区间（美元） |
 | `checkin_cooldown_hours` | `24` | 签到冷却时长 |
+| `register_enabled` | `true` | 是否开启群内自助注册 |
+| `register_min_level` | `0` | 注册所需最低 QQ 群聊等级（0 = 不限制，如填 5 则需 Lv.5） |
+| `register_group` | `default` | 注册默认分组，新注册用户自动划入 |
+| `bind_group` | 空 | `/绑定 <ID>` 成功后账号自动更换到该分组，留空不更换 |
+| `bind_protect_admin` | `true` | 禁止通过 ID 绑定管理员账号（role≥10），防止被退群删号误删 |
 | `watch_groups` | `[]` | 监听退群的群号列表，留空监听所有群 |
 | `delete_on_leave` | `false` | 退群后是否**永久删除**其 NewAPI 账号。默认仅解除绑定，开启请三思 |
 
@@ -58,9 +65,11 @@ New-Api-User: <admin_user_id>
 
 1. **令牌安全**：`admin_token` 是超级管理员权限，请勿泄露，也不要把配置文件发给别人
 2. **退群删号有风险**：`delete_on_leave` 开启后无法恢复被删账号，建议保留默认关闭（只解绑）
-3. **Turnstile**：若站点开启了登录验证码（Turnstile），密码验证绑定会失败，可关闭 `bind_verify_password` 改用免密绑定
-4. **Fork 差异**：本插件基于 [new-api](https://github.com/QuantumNous/new-api) 标准 Admin API 编写。Veloera、VoAPI 等 fork 若接口有出入（如自带签到接口），可能需要微调
-5. **退群事件依赖**：需要 AstrBot + OneBot 适配端（NapCat 等）会把 notice 事件转发给插件；如遇不生效，请确认 AstrBot 版本较新，且可先用 `/newapi强制解绑` 手动处理
+3. **ID 绑定无验证**：`/绑定 <ID>` 不校验密码（凭 ID 即可绑定并更换分组），请确保站点用户 ID 不对外公开，或仅在小范围可信群使用；`bind_protect_admin` 默认保护管理员账号
+4. **群等级门槛依赖适配端**：`register_min_level` 需要 OneBot 适配端（NapCat / Lagrange 等）支持 `get_group_member_info` 返回 `level` 字段；获取失败时注册会被拒绝
+5. **Turnstile**：若站点开启了登录验证码（Turnstile），密码验证绑定会失败，可关闭 `bind_verify_password` 改用免密绑定
+6. **Fork 差异**：本插件基于 [new-api](https://github.com/QuantumNous/new-api) 标准 Admin API 编写。Veloera、VoAPI 等 fork 若接口有出入（如自带签到接口），可能需要微调
+7. **退群事件依赖**：需要 AstrBot + OneBot 适配端（NapCat 等）会把 notice 事件转发给插件；如遇不生效，请确认 AstrBot 版本较新，且可先用 `/newapi强制解绑` 手动处理
 
 ## 后续可扩展
 

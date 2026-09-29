@@ -57,6 +57,35 @@
     "type": "int",
     "default": 24
   },
+  "register_enabled": {
+    "description": "是否开启群内自助注册",
+    "type": "bool",
+    "default": true
+  },
+  "register_min_level": {
+    "description": "注册所需的最低 QQ 群聊等级",
+    "type": "int",
+    "default": 0,
+    "hint": "0 = 不限制等级；例如填 5，则群友群聊等级达到 Lv.5 才能注册"
+  },
+  "register_group": {
+    "description": "注册默认分组（仅用于注册）",
+    "type": "string",
+    "default": "default",
+    "hint": "新注册用户将自动划入该 NewAPI 用户分组"
+  },
+  "bind_group": {
+    "description": "ID 绑定后更换的目标分组",
+    "type": "string",
+    "default": "",
+    "hint": "群友使用 /绑定 <ID> 成功后，账号将自动更换到该分组；留空 = 不更换分组"
+  },
+  "bind_protect_admin": {
+    "description": "保护管理员账号（role≥10）禁止通过 ID 绑定",
+    "type": "bool",
+    "default": true,
+    "hint": "强烈建议开启：防止他人绑定管理员账号，进而经退群删号误删管理员；绑定自己的管理员账号时可临时关闭"
+  },
   "watch_groups": {
     "description": "监听退群的群号列表（留空 = 监听所有群）",
     "type": "list",

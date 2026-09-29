@@ -132,6 +132,14 @@ class NewAPIClient:
         """管理员：删除用户"""
         return await self._request("DELETE", f"/api/user/{user_id}")
 
+    async def create_user(self, username: str, password: str):
+        """管理员：创建用户（用于群友自助注册）"""
+        return await self._request("POST", "/api/user/", json_body={
+            "username": username,
+            "password": password,
+            "display_name": username,
+        })
+
 
 # ============================================================
 # 插件主体
@@ -184,6 +192,44 @@ class NewAPIPlugin(Star):
     def _is_group(self, event: AstrMessageEvent) -> bool:
         gid = event.get_group_id()
         return bool(gid)
+
+    @staticmethod
+    def _is_aiocqhttp(event: AstrMessageEvent) -> bool:
+        try:
+            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+                AiocqhttpMessageEvent,
+            )
+            return isinstance(event, AiocqhttpMessageEvent)
+        except Exception:
+            return False
+
+    async def _get_member_level(self, event: AstrMessageEvent) -> Optional[int]:
+        """获取群友的 QQ 群聊等级（OneBot / NapCat）"""
+        try:
+            if not self._is_aiocqhttp(event):
+                return None
+            info = await event.bot.api.call_action(
+                "get_group_member_info",
+                group_id=int(event.get_group_id()),
+                user_id=int(event.get_sender_id()),
+            )
+            level = info.get("level")
+            return int(level) if level is not None else None
+        except Exception as e:
+            logger.warning(f"[newapi] 获取群成员等级失败: {e}")
+            return None
+
+    async def _send_private(self, event: AstrMessageEvent, qq: str, text: str) -> bool:
+        """主动私聊发送消息"""
+        try:
+            if self._is_aiocqhttp(event):
+                await event.bot.api.call_action(
+                    "send_private_msg", user_id=int(qq), message=text
+                )
+                return True
+        except Exception as e:
+            logger.error(f"[newapi] 私聊发送失败: {e}")
+        return False
 
     # ---------- 绑定 ----------
     @filter.command("newapi绑定", alias={"绑定账号", "绑定newapi"})
@@ -329,6 +375,148 @@ class NewAPIPlugin(Star):
             f"🔢 调用次数：{u.get('request_count', 0)}"
         )
 
+    # ---------- 自助注册 ----------
+    @filter.command("注册")
+    async def register(self, event: AstrMessageEvent):
+        """群内自助注册：以 QQ 号为用户名，随机 8 位密码私聊发送"""
+        if not self._cfg("register_enabled", True):
+            yield event.plain_result("注册功能未开启")
+            return
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用 /注册")
+            return
+        qq = str(event.get_sender_id()).strip()
+        if await self.store.get(qq):
+            rec = await self.store.get(qq)
+            yield event.plain_result(
+                f"你已拥有账号：{rec.get('username')}，无需重复注册（如需更换请先 /newapi解绑）"
+            )
+            return
+
+        # QQ 群等级门槛
+        min_level = int(self._cfg("register_min_level", 0) or 0)
+        if min_level > 0:
+            level = await self._get_member_level(event)
+            if level is None:
+                yield event.plain_result(
+                    "无法获取你的群聊等级，暂时无法注册（请联系管理员检查适配端）"
+                )
+                return
+            if level < min_level:
+                yield event.plain_result(
+                    f"注册需要群聊等级 Lv.{min_level}，你当前 Lv.{level}，继续水群吧～"
+                )
+                return
+
+        username = qq
+        password = "".join(random.choices("0123456789", k=8))
+
+        # 创建用户
+        status, data = await self.client.create_user(username, password)
+        if not data.get("success"):
+            msg = data.get("message", "未知错误")
+            hint = "（该 QQ 可能已注册过，如需帮助请联系管理员）" if "已存在" in msg or "已" in msg else ""
+            yield event.plain_result(f"❌ 注册失败：{msg} {hint}")
+            return
+
+        # 查出新用户 ID 并设置注册默认分组
+        uid, user = None, None
+        status, data = await self.client.search_user(username)
+        for u in (data.get("data") or []):
+            if str(u.get("username")) == username:
+                uid, user = u.get("id"), u
+                break
+
+        reg_group = str(self._cfg("register_group", "default") or "default").strip()
+        group_ok = True
+        if uid and user is not None:
+            user["group"] = reg_group
+            status, data = await self.client.update_user(user)
+            group_ok = bool(data.get("success"))
+            if not group_ok:
+                logger.error(f"[newapi] 设置注册分组失败: {data.get('message')}")
+
+        await self.store.set(qq, {
+            "user_id": uid,
+            "username": username,
+            "bound_at": int(time.time()),
+            "last_checkin": 0,
+            "registered": True,
+        })
+
+        base = self.client.base_url
+        sent = await self._send_private(event, qq,
+            f"🎉 注册成功！\n"
+            f"👤 账号：{username}\n"
+            f"🔑 密码：{password}\n"
+            f"👥 分组：{reg_group}\n"
+            f"🌐 登录：{base}\n"
+            f"请妥善保管账号密码，也可使用 /余额 /签到 等命令"
+        )
+        if sent:
+            yield event.plain_result(
+                "✅ 注册成功！账号密码已私聊发送给你，请查收～"
+                + ("" if group_ok else "\n⚠️ 默认分组设置失败，请联系管理员")
+            )
+        else:
+            yield event.plain_result(
+                "注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理"
+            )
+
+    # ---------- 按 ID 绑定 ----------
+    @filter.command("绑定", alias={"绑定ID", "绑定id"})
+    async def bind_id(self, event: AstrMessageEvent, user_id: str = ""):
+        """绑定指定 ID 的 NewAPI 账号并更换分组：/绑定 1"""
+        if not user_id or not user_id.isdigit():
+            yield event.plain_result("用法：/绑定 <NewAPI用户ID数字>，例如 /绑定 1")
+            return
+        qq = str(event.get_sender_id()).strip()
+        if await self.store.get(qq):
+            yield event.plain_result("你已绑定过账号，如需更换请先 /newapi解绑")
+            return
+
+        # 检查该 ID 是否已被其他 QQ 绑定
+        other = await self.store.find_by_user_id(user_id)
+        if other:
+            yield event.plain_result(f"该账号已被 QQ({other}) 绑定，无法重复绑定")
+            return
+
+        status, data = await self.client.get_user(user_id)
+        if not (data.get("success") and data.get("data")):
+            yield event.plain_result(f"绑定失败：找不到用户 ID {user_id}")
+            return
+        user = data["data"]
+
+        # 管理员账号保护（防止他人绑定管理员账号后经退群删号误删）
+        if self._cfg("bind_protect_admin", True) and int(user.get("role") or 0) >= 10:
+            yield event.plain_result(
+                "该账号为管理员账号，受保护无法通过 ID 绑定（可在插件配置中关闭 bind_protect_admin）"
+            )
+            return
+
+        await self.store.set(qq, {
+            "user_id": int(user_id),
+            "username": user.get("username", ""),
+            "bound_at": int(time.time()),
+            "last_checkin": 0,
+        })
+
+        # 更换分组
+        bind_group = str(self._cfg("bind_group", "") or "").strip()
+        group_msg = ""
+        if bind_group and str(user.get("group")) != bind_group:
+            user["group"] = bind_group
+            status, data = await self.client.update_user(user)
+            if data.get("success"):
+                group_msg = f"，分组已更换为 {bind_group}"
+            else:
+                group_msg = f"（⚠️ 更换分组失败：{data.get('message')}）"
+
+        yield event.plain_result(
+            f"✅ 绑定成功！账号：{user.get('username', user_id)}{group_msg}\n"
+            f"发送 /余额 查询额度，/签到 每日打卡"
+        )
+
     # ---------- 管理员命令 ----------
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("newapi用户", alias={"newapi查用户"})
@@ -369,7 +557,9 @@ class NewAPIPlugin(Star):
     async def help_cmd(self, event: AstrMessageEvent):
         yield event.plain_result(
             "📖 NewAPI 插件命令：\n"
-            "/newapi绑定 <用户名> <密码> - 绑定账号（建议私聊）\n"
+            "/注册 - 自助注册账号（密码私聊发送）\n"
+            "/绑定 <ID> - 绑定指定 NewAPI 账号并更换分组\n"
+            "/newapi绑定 <用户名> <密码> - 验证绑定（建议私聊）\n"
             "/newapi解绑 - 解除绑定\n"
             "/签到 - 每日签到领额度\n"
             "/余额 - 查询账号余额\n"
