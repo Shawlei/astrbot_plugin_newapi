@@ -639,10 +639,25 @@ class NewAPIPlugin(Star):
                     )
                 return
 
-            login_user = data["data"]
-            if str(login_user.get("id")) != str(pending["user_id"]):
+            login_user = data["data"] if isinstance(data.get("data"), dict) else {}
+
+            # 部分版本登录响应不返回 id，用管理员权限按用户名反查确认身份
+            login_id = login_user.get("id")
+            if login_id is None:
+                status, data = await self.client.search_user(username)
+                for u in _extract_user_list(data):
+                    if str(u.get("username", "")).lower() == username.lower():
+                        login_id = u.get("id")
+                        break
+            if login_id is None:
                 yield event.plain_result(
-                    f"该账号（ID:{login_user.get('id')}）与你要绑定的 ID（{pending['user_id']}）不一致，绑定取消"
+                    "绑定失败：无法确认该账号的身份（用户ID查询失败），请稍后再试"
+                )
+                return
+
+            if str(login_id) != str(pending["user_id"]):
+                yield event.plain_result(
+                    f"该账号（ID:{login_id}）与你要绑定的 ID（{pending['user_id']}）不一致，绑定取消"
                 )
                 del self.pending_binds[qq]
                 return
@@ -652,7 +667,7 @@ class NewAPIPlugin(Star):
             del self.pending_binds[qq]
             await self.store.set(qq, {
                 "user_id": user_id,
-                "username": login_user.get("username", username),
+                "username": login_user.get("username") or username,
                 "bound_at": int(time.time()),
                 "last_checkin": 0,
             })
@@ -661,7 +676,7 @@ class NewAPIPlugin(Star):
             bind_group = str(self._cfg("bind_group", "") or "").strip()
             if bind_group and str(login_user.get("group")) != bind_group:
                 status, data = await self.client.get_user(user_id)
-                if data.get("success") and data.get("data"):
+                if data.get("success") and isinstance(data.get("data"), dict):
                     u = data["data"]
                     u["group"] = bind_group
                     status, data = await self.client.update_user(u)
@@ -671,7 +686,7 @@ class NewAPIPlugin(Star):
                         group_msg = f"（⚠️ 更换分组失败：{data.get('message')}）"
 
             yield event.plain_result(
-                f"✅ 绑定成功！账号：{login_user.get('username', username)}{group_msg}\n"
+                f"✅ 绑定成功！账号：{login_user.get('username') or username}{group_msg}\n"
                 f"回到群里即可使用 /签到 /余额 等命令"
             )
         except Exception:
