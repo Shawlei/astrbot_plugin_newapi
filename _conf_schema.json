@@ -1,0 +1,71 @@
+{
+  "base_url": {
+    "description": "NewAPI 站点地址",
+    "type": "string",
+    "hint": "例如 https://api.example.com，不要以 / 结尾"
+  },
+  "admin_token": {
+    "description": "超级管理员的系统访问令牌",
+    "type": "string",
+    "hint": "在 NewAPI 后台 个人设置 -> 生成系统访问令牌 获取；请勿泄露"
+  },
+  "admin_user_id": {
+    "description": "管理员用户 ID",
+    "type": "int",
+    "default": 1,
+    "hint": "生成令牌的超级管理员账号的数字 ID，新版 new-api 要求请求头 New-Api-User 与之匹配"
+  },
+  "quota_per_unit": {
+    "description": "额度换算单位（多少 quota = 1 美元）",
+    "type": "int",
+    "default": 500000
+  },
+  "exchange_rate": {
+    "description": "美元兑人民币汇率（仅用于余额展示）",
+    "type": "float",
+    "default": 7.2
+  },
+  "bind_verify_password": {
+    "description": "绑定时是否验证用户名+密码",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后仅需用户名即可绑定（凭管理员搜索精确匹配），安全性较低"
+  },
+  "allow_group_bind": {
+    "description": "是否允许在群聊中绑定",
+    "type": "bool",
+    "default": false,
+    "hint": "默认强制私聊绑定，防止密码泄露在群里"
+  },
+  "checkin_enabled": {
+    "description": "是否开启签到功能",
+    "type": "bool",
+    "default": true
+  },
+  "checkin_min_usd": {
+    "description": "签到随机额度下限（美元）",
+    "type": "float",
+    "default": 0.1
+  },
+  "checkin_max_usd": {
+    "description": "签到随机额度上限（美元）",
+    "type": "float",
+    "default": 0.5
+  },
+  "checkin_cooldown_hours": {
+    "description": "签到冷却时间（小时）",
+    "type": "int",
+    "default": 24
+  },
+  "watch_groups": {
+    "description": "监听退群的群号列表（留空 = 监听所有群）",
+    "type": "list",
+    "default": []
+  },
+  "delete_on_leave": {
+    "description": "退群后是否自动删除 NewAPI 账号",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后成员退群将调用管理员 API 永久删除其 NewAPI 账号，请谨慎开启；关闭时仅解除绑定"
+  }
+}
