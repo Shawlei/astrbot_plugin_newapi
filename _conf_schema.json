@@ -156,6 +156,12 @@
     "default": false,
     "hint": "开启后：签到跳过冷却可无限重复、注册/绑定跳过已绑定检查、解绑无记录不报错；并在后台日志输出每次 API 请求与响应详情（用于排查签到未到账等问题）"
   },
+  "slash_enabled": {
+    "description": "启用 / 原生命令",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后 /签到、/注册 等原生命令不再被本插件响应，只能通过下方自定义前缀触发（关闭前请先配好自定义前缀，否则命令全部不可用）"
+  },
   "custom_command_prefixes": {
     "description": "自定义指令前缀（绕过 LLM）",
     "type": "list",

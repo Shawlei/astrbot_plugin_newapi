@@ -649,6 +649,8 @@ class NewAPIPlugin(Star):
     # ---------- 绑定 ----------
     @filter.command("密码绑定", alias={"newapi绑定", "绑定newapi", "绑定账号"})
     async def bind(self, event: AstrMessageEvent, username: str = "", password: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
         """绑定 NewAPI 账号：/密码绑定 用户名 密码（强烈建议私聊使用）"""
         async for r in self._bind_impl(event, username, password):
             yield r
@@ -719,6 +721,8 @@ class NewAPIPlugin(Star):
 
     @filter.command("解绑", alias={"newapi解绑", "解绑账号"})
     async def unbind(self, event: AstrMessageEvent, target_qq: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
         """解绑：/解绑"""
         async for r in self._unbind_impl(event, target_qq):
             yield r
@@ -738,6 +742,8 @@ class NewAPIPlugin(Star):
     # ---------- 签到 ----------
     @filter.command("签到", alias={"打卡"})
     async def checkin(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
         """每日签到，随机额度"""
         async for r in self._checkin_impl(event):
             yield r
@@ -826,6 +832,8 @@ class NewAPIPlugin(Star):
     # ---------- 余额查询 ----------
     @filter.command("余额", alias={"查询余额", "我的额度"})
     async def balance(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
         """查询绑定的 NewAPI 账号余额"""
         async for r in self._balance_impl(event):
             yield r
@@ -879,6 +887,8 @@ class NewAPIPlugin(Star):
 
     @filter.command("发红包", alias={"拼手气红包"})
     async def send_hongbao(self, event: AstrMessageEvent, count_str: str = "", amount_str: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
         """发拼手气红包：/发红包 10个 1.5余额（总金额按美元额度计，真实扣款）"""
         async for r in self._send_hongbao_impl(event, count_str, amount_str):
             yield r
@@ -958,6 +968,8 @@ class NewAPIPlugin(Star):
 
     @filter.command("抢红包")
     async def grab_hongbao(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
         """抢本群未抢完的拼手气红包，金额真实入账"""
         async for r in self._grab_hongbao_impl(event):
             yield r
@@ -1027,6 +1039,8 @@ class NewAPIPlugin(Star):
     # ---------- 自助注册 ----------
     @filter.command("注册")
     async def register(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
         """群内自助注册：以 QQ 号为用户名，随机 8 位密码私聊发送"""
         async for r in self._register_impl(event):
             yield r
@@ -1202,6 +1216,8 @@ class NewAPIPlugin(Star):
     # ---------- 按 ID 绑定（私聊验证两步流程） ----------
     @filter.command("绑定", alias={"绑定ID", "绑定id"})
     async def bind_id(self, event: AstrMessageEvent, user_id: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
         """发起 ID 绑定：/绑定 1，随后私聊输入账号与密码完成验证"""
         async for r in self._bind_id_impl(event, user_id):
             yield r
@@ -1263,6 +1279,8 @@ class NewAPIPlugin(Star):
 
     @filter.command("取消绑定", alias={"取消绑定ID"})
     async def cancel_bind(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
         async for r in self._cancel_bind_impl(event):
             yield r
 
@@ -1391,6 +1409,8 @@ class NewAPIPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("查用户", alias={"newapi用户", "newapi查用户"})
     async def admin_search(self, event: AstrMessageEvent, keyword: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
         """管理员：搜索 NewAPI 用户信息"""
         if not keyword:
             yield event.plain_result("用法：/查用户 <用户名或关键词>")
@@ -1418,6 +1438,8 @@ class NewAPIPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("强制解绑", alias={"newapi强制解绑"})
     async def admin_unbind(self, event: AstrMessageEvent, qq: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
         """管理员：强制解除某个 QQ 的绑定"""
         if not qq:
             yield event.plain_result("用法：/强制解绑 <QQ号>")
@@ -1429,6 +1451,8 @@ class NewAPIPlugin(Star):
 
     @filter.command("帮助", alias={"newapi帮助", "newapi菜单"})
     async def help_cmd(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
         async for r in self._help_impl(event):
             yield r
 
