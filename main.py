@@ -84,27 +84,32 @@ class NewAPIClient:
         }
 
     async def _request(self, method: str, path: str, *, json_body=None,
-                       params=None, headers=None, timeout: int = 15):
+                       params=None, headers=None, timeout: int = 30, retries: int = 1):
         if not self.base_url:
             return 0, {"success": False, "message": "未配置 NewAPI 站点地址(base_url)"}
         url = f"{self.base_url}{path}"
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as session:
-                async with session.request(
-                    method, url, json=json_body, params=params,
-                    headers=headers or self._admin_headers(),
-                ) as resp:
-                    try:
-                        data = await resp.json(content_type=None)
-                    except Exception:
-                        data = {"success": False, "message": f"HTTP {resp.status} 非JSON响应"}
-                    return resp.status, data
-        except aiohttp.ClientError as e:
-            return 0, {"success": False, "message": f"网络请求失败: {e}"}
-        except asyncio.TimeoutError:
-            return 0, {"success": False, "message": "请求超时"}
+        last_err = None
+        for attempt in range(retries + 1):
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as session:
+                    async with session.request(
+                        method, url, json=json_body, params=params,
+                        headers=headers or self._admin_headers(),
+                    ) as resp:
+                        try:
+                            data = await resp.json(content_type=None)
+                        except Exception:
+                            data = {"success": False, "message": f"HTTP {resp.status} 非JSON响应"}
+                        return resp.status, data
+            except asyncio.TimeoutError:
+                last_err = "请求超时（站点 30 秒内未响应）"
+            except aiohttp.ClientError as e:
+                last_err = f"网络请求失败: {e}"
+            if attempt < retries:
+                await asyncio.sleep(1)  # 网络类失败自动重试一次
+        return 0, {"success": False, "message": str(last_err)}
 
     async def login(self, username: str, password: str):
         """用户登录验证（无需管理员权限）"""
@@ -218,6 +223,20 @@ class NewAPIPlugin(Star):
             return int(level) if level is not None else None
         except Exception as e:
             logger.warning(f"[newapi] 获取群成员等级失败: {e}")
+            return None
+
+    async def _get_qq_level(self, event: AstrMessageEvent) -> Optional[int]:
+        """获取 QQ 账号等级（OneBot get_stranger_info 的 level 字段）"""
+        try:
+            if not self._is_aiocqhttp(event):
+                return None
+            info = await event.bot.api.call_action(
+                "get_stranger_info", user_id=int(event.get_sender_id())
+            )
+            level = info.get("level")
+            return int(level) if level is not None else None
+        except Exception as e:
+            logger.warning(f"[newapi] 获取 QQ 等级失败: {e}")
             return None
 
     async def _send_private(self, event: AstrMessageEvent, qq: str, text: str) -> bool:
@@ -409,6 +428,21 @@ class NewAPIPlugin(Star):
                 )
                 return
 
+        # QQ 账号等级门槛（与群聊等级双重校验）
+        min_qq_level = int(self._cfg("register_min_qq_level", 0) or 0)
+        if min_qq_level > 0:
+            qq_level = await self._get_qq_level(event)
+            if qq_level is None:
+                yield event.plain_result(
+                    "无法获取你的 QQ 等级，暂时无法注册（请联系管理员检查适配端）"
+                )
+                return
+            if qq_level < min_qq_level:
+                yield event.plain_result(
+                    f"注册需要 QQ 等级 {min_qq_level} 级，你当前 {qq_level} 级，先把 QQ 养一养吧～"
+                )
+                return
+
         username = qq
         password = "".join(random.choices("0123456789", k=8))
 
@@ -419,7 +453,12 @@ class NewAPIPlugin(Star):
             msg = str(data.get("message", "未知错误"))
             # 用户名已存在（此前注册过）：不报错，走找回流程
             if "Duplicate" not in msg and "已存在" not in msg:
-                yield event.plain_result(f"❌ 注册失败：{msg}")
+                hint = ""
+                if "超时" in msg or "网络" in msg:
+                    hint = ("\n排查建议：在机器人所在服务器上访问 "
+                            f"{self.client.base_url}/api/status 测试连通性；"
+                            "确认站点未卡顿、反代未限流")
+                yield event.plain_result(f"❌ 注册失败：{msg}{hint}")
                 return
 
         # 查询用户（新建或找回）

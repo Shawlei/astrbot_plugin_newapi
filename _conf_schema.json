@@ -68,6 +68,12 @@
     "default": 0,
     "hint": "0 = 不限制等级；例如填 5，则群友群聊等级达到 Lv.5 才能注册"
   },
+  "register_min_qq_level": {
+    "description": "注册所需的最低 QQ 账号等级",
+    "type": "int",
+    "default": 0,
+    "hint": "0 = 不限制；与群聊等级双重校验，两者都达标才能注册（依赖适配端 get_stranger_info 返回 level）"
+  },
   "register_group": {
     "description": "注册默认分组（仅用于注册）",
     "type": "string",

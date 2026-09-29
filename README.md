@@ -40,7 +40,8 @@ AstrBot 插件：在 QQ 群中使用 NewAPI 账号，支持 **账号绑定 / 每
 | `checkin_min_usd` / `checkin_max_usd` | `0.1` / `0.5` | 签到随机额度区间（美元） |
 | `checkin_cooldown_hours` | `24` | 签到冷却时长 |
 | `register_enabled` | `true` | 是否开启群内自助注册 |
-| `register_min_level` | `0` | 注册所需最低 QQ 群聊等级（0 = 不限制，如填 5 则需 Lv.5） |
+| `register_min_level` | `0` | 注册所需最低 QQ **群聊等级**（0 = 不限制，如填 5 则需 Lv.5） |
+| `register_min_qq_level` | `0` | 注册所需最低 QQ **账号等级**（0 = 不限制），与群聊等级双重校验，两者都达标才能注册 |
 | `register_group` | `default` | 注册默认分组，新注册用户自动划入 |
 | `bind_group` | 空 | `/绑定 <ID>` 成功后账号自动更换到该分组，留空不更换 |
 | `bind_protect_admin` | `true` | 禁止通过 ID 绑定管理员账号（role≥10），防止被退群删号误删 |
