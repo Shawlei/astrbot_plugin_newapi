@@ -92,6 +92,18 @@
     "default": true,
     "hint": "强烈建议开启：防止他人绑定管理员账号，进而经退群删号误删管理员；绑定自己的管理员账号时可临时关闭"
   },
+  "debug_mode": {
+    "description": "调试模式",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后：签到跳过冷却可无限重复、注册/绑定跳过已绑定检查、解绑无记录不报错；并在后台日志输出每次 API 请求与响应详情（用于排查签到未到账等问题）"
+  },
+  "custom_command_prefixes": {
+    "description": "自定义指令前缀（绕过 LLM）",
+    "type": "list",
+    "default": [],
+    "hint": "如填 % 和 *，则 %签到、%注册、*绑定 32 等同样触发对应命令；处理完成后立即拦截事件，消息不会经过 LLM 生成回复"
+  },
   "watch_groups": {
     "description": "监听退群的群号列表（留空 = 监听所有群）",
     "type": "list",
