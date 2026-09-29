@@ -1,0 +1,176 @@
+{
+  "base_url": {
+    "description": "NewAPI 站点地址",
+    "type": "string",
+    "hint": "例如 https://api.example.com，不要以 / 结尾"
+  },
+  "admin_token": {
+    "description": "超级管理员的系统访问令牌",
+    "type": "string",
+    "hint": "仅 API 模式使用；开启数据库模式后可不填"
+  },
+  "admin_user_id": {
+    "description": "管理员用户 ID",
+    "type": "int",
+    "default": 1,
+    "hint": "仅 API 模式使用；新版 new-api 要求请求头 New-Api-User 与之匹配"
+  },
+  "quota_per_unit": {
+    "description": "额度换算单位（多少 quota = 1 美元）",
+    "type": "int",
+    "default": 500000
+  },
+  "show_cny": {
+    "description": "余额显示人民币换算（≈ ¥xx）",
+    "type": "bool",
+    "default": true
+  },
+  "exchange_rate": {
+    "description": "美元兑人民币汇率（仅用于余额展示）",
+    "type": "float",
+    "default": 7.2
+  },
+  "bind_verify_password": {
+    "description": "绑定时是否验证用户名+密码",
+    "type": "bool",
+    "default": true,
+    "hint": "关闭后仅需用户名即可绑定（凭管理员搜索精确匹配），安全性较低"
+  },
+  "allow_group_bind": {
+    "description": "是否允许在群聊中绑定",
+    "type": "bool",
+    "default": false,
+    "hint": "默认强制私聊绑定，防止密码泄露在群里"
+  },
+  "bind_protect_admin": {
+    "description": "保护管理员账号（role≥10）禁止通过 ID 绑定",
+    "type": "bool",
+    "default": true,
+    "hint": "强烈建议开启：防止他人绑定管理员账号，进而经退群删号误删管理员；绑定自己的管理员账号时可临时关闭"
+  },
+  "checkin_enabled": {
+    "description": "是否开启签到功能",
+    "type": "bool",
+    "default": true,
+    "hint": "数据库模式：金额取 checkin_min/max_usd，写站点 checkins 表（日历可见）；API 模式：由站点后台「签到设置」决定"
+  },
+  "checkin_cooldown_hours": {
+    "description": "签到冷却时间（小时）",
+    "type": "int",
+    "default": 24
+  },
+  "checkin_min_usd": {
+    "description": "签到额度下限（美元，仅数据库模式生效）",
+    "type": "float",
+    "default": 0.1
+  },
+  "checkin_max_usd": {
+    "description": "签到额度上限（美元，仅数据库模式生效）",
+    "type": "float",
+    "default": 0.5
+  },
+  "register_enabled": {
+    "description": "是否开启群内自助注册",
+    "type": "bool",
+    "default": true
+  },
+  "register_min_level": {
+    "description": "注册所需的最低 QQ 群聊等级",
+    "type": "int",
+    "default": 0,
+    "hint": "0 = 不限制等级；例如填 5，则群友群聊等级达到 Lv.5 才能注册"
+  },
+  "register_min_qq_level": {
+    "description": "注册所需的最低 QQ 账号等级",
+    "type": "int",
+    "default": 0,
+    "hint": "0 = 不限制；与群聊等级双重校验，两者都达标才能注册（依赖适配端 get_stranger_info 返回 level）"
+  },
+  "register_group": {
+    "description": "注册默认分组（仅用于注册）",
+    "type": "string",
+    "default": "default",
+    "hint": "新注册用户将自动划入该 NewAPI 用户分组"
+  },
+  "bind_group": {
+    "description": "ID 绑定后更换的目标分组",
+    "type": "string",
+    "default": "",
+    "hint": "群友使用 /绑定 <ID> 成功后，账号将自动更换到该分组；留空 = 不更换分组"
+  },
+  "db_enabled": {
+    "description": "🗄️ 数据库模式总开关",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后展开下方「数据库设置」，余额查询、签到加钱（写站点 checkins 表，日历可见）、绑定验证（bcrypt）、注册建号、分组变更、用户搜索、退群删号全部直连数据库，不依赖站点接口与管理员令牌，无 429 限流；红包功能也在此开关下生效"
+  },
+  "db": {
+    "description": "🗄️ 数据库设置（数据库模式）",
+    "type": "object",
+    "condition": {
+      "db_enabled": true
+    },
+    "items": {
+      "host": {
+        "description": "站点数据库地址",
+        "type": "string",
+        "default": "",
+        "hint": "NewAPI 的 MySQL 地址，如 127.0.0.1 或服务器 IP"
+      },
+      "port": {
+        "description": "站点数据库端口",
+        "type": "int",
+        "default": 3306
+      },
+      "user": {
+        "description": "站点数据库用户名",
+        "type": "string",
+        "default": ""
+      },
+      "pass": {
+        "description": "站点数据库密码",
+        "type": "string",
+        "default": ""
+      },
+      "name": {
+        "description": "站点数据库名",
+        "type": "string",
+        "default": "new-api"
+      },
+      "hongbao_enabled": {
+        "description": "红包功能（需数据库）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后支持 /发红包 <个数> <总金额> 与 /抢红包；真实扣款/入账直连数据库"
+      },
+      "hongbao_expire_hours": {
+        "description": "红包过期时间（小时），过期未领完自动退回发起者",
+        "type": "int",
+        "default": 24
+      }
+    }
+  },
+  "debug_mode": {
+    "description": "调试模式",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后：签到跳过冷却可无限重复、注册/绑定跳过已绑定检查、解绑无记录不报错；并在后台日志输出每次 API 请求与响应详情（用于排查签到未到账等问题）"
+  },
+  "custom_command_prefixes": {
+    "description": "自定义指令前缀（绕过 LLM）",
+    "type": "list",
+    "default": [],
+    "hint": "如填 % 和 *，则 %签到、%注册、*绑定 32 等同样触发对应命令；处理完成后立即拦截事件，消息不会经过 LLM 生成回复"
+  },
+  "watch_groups": {
+    "description": "监听退群的群号列表（留空 = 监听所有群）",
+    "type": "list",
+    "default": []
+  },
+  "delete_on_leave": {
+    "description": "退群后是否自动删除 NewAPI 账号",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后成员退群将删除其 NewAPI 账号（数据库模式为软删除，与官方行为一致），请谨慎开启；关闭时仅解除绑定"
+  }
+}
