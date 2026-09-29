@@ -517,7 +517,7 @@ class NewAPIClient:
 # 插件主体
 # ============================================================
 @register(
-    "astrbot_plugin_newapi",
+    "astrbot_plugin_newapi_helper",
     "YourName",
     "NewAPI 账号绑定/签到/余额查询/退群自动删号",
     "1.0.0",

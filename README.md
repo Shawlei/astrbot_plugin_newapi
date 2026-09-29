@@ -1,4 +1,8 @@
-# astrbot_plugin_newapi
+<p align="center">
+  <img src="docs/img/logo.png" width="140" alt="logo">
+</p>
+
+<h1 align="center">astrbot_plugin_newapi_helper</h1>
 
 AstrBot 插件：在 QQ 群里玩转你的 NewAPI 站点——**账号绑定 / 自助注册 / 每日签到 / 余额查询 / 拼手气红包 / 退群自动处理**。
 
@@ -31,7 +35,7 @@ AstrBot 插件：在 QQ 群里玩转你的 NewAPI 站点——**账号绑定 / �
 
 ## 快速开始（3 分钟）
 
-1. AstrBot 管理面板 → 插件 → 从仓库 URL 安装：`https://github.com/Shawlei/astrbot_plugin_newapi`
+1. AstrBot 管理面板 → 插件 → 从仓库 URL 安装：`https://github.com/Shawlei/astrbot_plugin_newapi_helper`
 2. 插件配置页填两项：
    - `base_url`：NewAPI 站点地址
    - `admin_token`：管理员的**系统访问令牌**（浏览器打开你的 NewAPI 网站 → 登录管理员账号 → 右上角头像 → 个人设置 → 找到「系统访问令牌」→ 生成，复制过来）
