@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import random
 import time
@@ -11,6 +12,25 @@ import aiohttp
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
+
+
+def _xor_bytes(data: bytes, key: bytes) -> bytes:
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+
+def obfuscate(text: str, key: str) -> str:
+    """本地混淆存储（非加密，防明文浏览）"""
+    try:
+        return base64.b64encode(_xor_bytes(text.encode(), key.encode())).decode()
+    except Exception:
+        return ""
+
+
+def deobfuscate(token: str, key: str) -> str:
+    try:
+        return _xor_bytes(base64.b64decode(token), key.encode()).decode()
+    except Exception:
+        return ""
 
 
 # ============================================================
@@ -179,6 +199,61 @@ class NewAPIClient:
             "display_name": username,
         })
 
+    async def login_and_checkin(self, username: str, password: str, user_id: int):
+        """用户登录后调用官方签到接口 POST /api/user/checkin（返回 success, message, data）"""
+        if not self.base_url:
+            return False, "未配置站点地址", None
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30),
+                cookie_jar=aiohttp.CookieJar(),
+            ) as session:
+                async with session.post(
+                    f"{self.base_url}/api/user/login",
+                    json={"username": username, "password": password},
+                    headers={"Content-Type": "application/json",
+                             "New-Api-User": str(user_id)},
+                ) as resp:
+                    data = await resp.json(content_type=None)
+                    if self.debug:
+                        logger.info(f"[newapi][DEBUG] 签到登录: HTTP {resp.status} "
+                                    f"success={data.get('success') if isinstance(data, dict) else '?'} "
+                                    f"message={data.get('message') if isinstance(data, dict) else '?'}")
+                    if not (isinstance(data, dict) and data.get("success")):
+                        msg = data.get("message", "登录失败") if isinstance(data, dict) else "登录失败"
+                        return False, f"自动登录失败（{msg}）", None
+                async with session.post(
+                    f"{self.base_url}/api/user/checkin",
+                    headers={"New-Api-User": str(user_id), "Accept": "application/json"},
+                ) as resp:
+                    data = await resp.json(content_type=None)
+                    if self.debug:
+                        logger.info(f"[newapi][DEBUG] 官方签到: HTTP {resp.status} {str(data)[:300]}")
+                    if isinstance(data, dict) and data.get("success"):
+                        return True, data.get("message", "签到成功"), data.get("data")
+                    msg = data.get("message", "签到失败") if isinstance(data, dict) else "签到失败"
+                    return False, msg, None
+        except asyncio.TimeoutError:
+            return False, "请求超时（站点 30 秒内未响应）", None
+        except aiohttp.ClientError as e:
+            return False, f"网络请求失败: {e}", None
+
+    async def create_redemption(self, name: str, quota: int):
+        """管理员：创建 1 个指定额度的兑换码"""
+        return await self._request("POST", "/api/redemption/", json_body={
+            "name": name, "quota": quota, "count": 1,
+        })
+
+    async def find_redemption_key(self, name: str):
+        """管理员：按名称查找兑换码的 key"""
+        status, data = await self._request(
+            "GET", "/api/redemption/", params={"p": 1, "size": 50}
+        )
+        for item in _extract_user_list(data):
+            if str(item.get("name")) == name:
+                return item.get("key")
+        return None
+
 
 # ============================================================
 # 插件主体
@@ -227,9 +302,14 @@ class NewAPIPlugin(Star):
         except Exception:
             q = 0
         per = int(self._cfg("quota_per_unit", 500000) or 500000)
-        rate = float(self._cfg("exchange_rate", 7.2) or 7.2)
         usd = q / per
-        return f"${usd:.4f}（≈ ¥{usd * rate:.2f}）"
+        if self._cfg("show_cny", True):
+            rate = float(self._cfg("exchange_rate", 7.2) or 7.2)
+            return f"${usd:.4f}（≈ ¥{usd * rate:.2f}）"
+        return f"${usd:.4f}"
+
+    def _pwd_key(self) -> str:
+        return str(self._cfg("admin_token", "")) or "astrbot-plugin-newapi"
 
     def _is_group(self, event: AstrMessageEvent) -> bool:
         gid = event.get_group_id()
@@ -345,6 +425,7 @@ class NewAPIPlugin(Star):
             "username": username,
             "bound_at": int(time.time()),
             "last_checkin": 0,
+            "pwd": obfuscate(password, self._pwd_key()),
         })
         yield event.plain_result(f"✅ 绑定成功！{username}，发送 /余额 查询额度，/签到 每日打卡")
 
@@ -395,40 +476,79 @@ class NewAPIPlugin(Star):
         if remain > 0 and self.debug:
             yield event.plain_result("（调试模式）跳过冷却检查")
 
-        status, data = await self.client.get_user(rec["user_id"])
-        if not (data.get("success") and isinstance(data.get("data"), dict)):
-            yield event.plain_result(f"签到失败：查询账号信息出错（{data.get('message', '未知错误')}）")
-            return
-        user = data["data"]
+        mode = str(self._cfg("checkin_mode", "official") or "official").strip().lower()
+        if mode == "official":
+            async for r in self._checkin_official(event, qq, rec):
+                yield r
+        else:
+            async for r in self._checkin_code(event, qq, rec):
+                yield r
 
+    async def _checkin_official(self, event: AstrMessageEvent, qq: str, rec: dict):
+        """官方签到模式：本地保存的密码自动登录 -> POST /api/user/checkin"""
+        pwd = deobfuscate(rec.get("pwd", ""), self._pwd_key())
+        if not pwd:
+            yield event.plain_result(
+                "签到失败：绑定记录中没有保存密码（旧版绑定），请 /解绑 后重新绑定，"
+                "或将签到模式切换为兑换码模式"
+            )
+            return
+        ok, msg, data = await self.client.login_and_checkin(
+            str(rec.get("username")), pwd, int(rec.get("user_id"))
+        )
+        if not ok:
+            if "未启用" in msg or "enable" in msg.lower():
+                # 站点未开启官方签到，自动降级为兑换码模式
+                async for r in self._checkin_code(event, qq, rec, reason=msg):
+                    yield r
+                return
+            yield event.plain_result(f"签到失败：{msg}")
+            return
+
+        async with self.store.lock:
+            rec["last_checkin"] = int(time.time())
+            self.store.data["bindings"][qq] = rec
+            self.store._save_sync()
+
+        awarded = data.get("quota_awarded") if isinstance(data, dict) else None
+        amount_txt = f"获得额度：{self._fmt_quota(awarded)}\n" if awarded is not None else ""
+        yield event.plain_result(f"🎉 签到成功！{amount_txt}")
+
+    async def _checkin_code(self, event: AstrMessageEvent, qq: str, rec: dict, reason: str = ""):
+        """兑换码模式：管理员创建兑换码，私聊发给用户手动兑换"""
         lo = float(self._cfg("checkin_min_usd", 0.1) or 0.1)
         hi = float(self._cfg("checkin_max_usd", 0.5) or 0.5)
         if lo > hi:
             lo, hi = hi, lo
         per = int(self._cfg("quota_per_unit", 500000) or 500000)
-        amount_usd = random.uniform(lo, hi)
-        amount_quota = int(round(amount_usd * per))
+        amount_quota = int(round(random.uniform(lo, hi) * per))
 
-        before = int(user.get("quota") or 0)
-        user["quota"] = before + amount_quota
-        if self.debug:
-            logger.info(f"[newapi][DEBUG] 签到: user_id={rec['user_id']} 更新前quota={before} +{amount_quota} -> {user['quota']}")
-        status, data = await self.client.update_user(user)
-        if self.debug:
-            logger.info(f"[newapi][DEBUG] 签到更新响应: success={data.get('success')} message={data.get('message')}")
+        name = f"bot-{rec.get('user_id')}-{int(time.time())}"
+        status, data = await self.client.create_redemption(name, amount_quota)
         if not data.get("success"):
-            yield event.plain_result(f"签到失败：加额度出错（{data.get('message', '未知错误')}）")
+            yield event.plain_result(f"签到失败：创建兑换码出错（{data.get('message', '未知错误')}）")
+            return
+        key = await self.client.find_redemption_key(name)
+        if not key:
+            yield event.plain_result("签到失败：兑换码已创建但未查询到，请联系管理员")
             return
 
         async with self.store.lock:
-            rec["last_checkin"] = int(now)
+            rec["last_checkin"] = int(time.time())
             self.store.data["bindings"][qq] = rec
             self.store._save_sync()
 
-        yield event.plain_result(
-            f"🎉 签到成功！获得额度：${amount_usd:.4f}\n"
-            f"当前余额：{self._fmt_quota(user['quota'])}"
+        prefix = f"（{reason}，已切换为兑换码签到）\n" if reason else ""
+        sent = await self._send_private(event, qq,
+            f"🎁 你的签到兑换码：{key}\n"
+            f"请到网站 钱包/充值 页面兑换，额度：${amount_quota / per:.4f}"
         )
+        if sent:
+            yield event.plain_result(f"🎉 签到成功！{prefix}兑换码已私聊发给你，请到网站兑换")
+        else:
+            yield event.plain_result(
+                f"🎉 签到成功！{prefix}\n兑换码：{key}\n（私聊发送失败，请到网站 钱包/充值 页面兑换）"
+            )
 
     # ---------- 余额查询 ----------
     @filter.command("余额", alias={"查询余额", "我的额度"})
@@ -563,6 +683,7 @@ class NewAPIPlugin(Star):
             "bound_at": int(time.time()),
             "last_checkin": 0,
             "registered": True,
+            "pwd": obfuscate(password, self._pwd_key()),
         })
 
         base = self.client.base_url
@@ -717,6 +838,7 @@ class NewAPIPlugin(Star):
                 "username": login_user.get("username") or username,
                 "bound_at": int(time.time()),
                 "last_checkin": 0,
+                "pwd": obfuscate(password, self._pwd_key()),
             })
 
             group_msg = ""

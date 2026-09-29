@@ -92,6 +92,17 @@
     "default": true,
     "hint": "强烈建议开启：防止他人绑定管理员账号，进而经退群删号误删管理员；绑定自己的管理员账号时可临时关闭"
   },
+  "checkin_mode": {
+    "description": "签到模式",
+    "type": "string",
+    "default": "official",
+    "hint": "official=官方签到（自动登录调用站点内置签到接口，金额由站点后台'签到设置'决定，需开启该功能且未开Turnstile验证码）；code=兑换码（管理员创建兑换码私聊发给用户手动兑换，金额取 checkin_min/max_usd）"
+  },
+  "show_cny": {
+    "description": "余额显示人民币换算（≈ ¥xx）",
+    "type": "bool",
+    "default": true
+  },
   "debug_mode": {
     "description": "调试模式",
     "type": "bool",

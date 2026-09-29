@@ -39,6 +39,8 @@ AstrBot 插件：在 QQ 群中使用 NewAPI 账号，支持 **账号绑定 / 每
 | `bind_verify_password` | `true` | 绑定时是否验证用户名+密码（走 `/api/user/login`）。关闭后仅凭用户名绑定，安全性低 |
 | `allow_group_bind` | `false` | 是否允许群聊绑定。默认强制私聊，避免密码在群里泄露 |
 | `checkin_enabled` | `true` | 签到开关 |
+| `checkin_mode` | `official` | `official`=官方签到（自动登录调站点内置 `POST /api/user/checkin`，金额由站点后台"签到设置"决定）；`code`=兑换码（管理员创建兑换码私聊发给用户手动兑换，金额取 `checkin_min/max_usd`） |
+| `show_cny` | `true` | 余额是否显示人民币换算（≈ ¥xx），关闭后只显示美元 |
 | `checkin_min_usd` / `checkin_max_usd` | `0.1` / `0.5` | 签到随机额度区间（美元） |
 | `checkin_cooldown_hours` | `24` | 签到冷却时长 |
 | `register_enabled` | `true` | 是否开启群内自助注册 |
@@ -54,8 +56,11 @@ AstrBot 插件：在 QQ 群中使用 NewAPI 账号，支持 **账号绑定 / 每
 
 ## 工作原理
 
-- **绑定**：默认调用 `POST /api/user/login` 验证用户名密码，成功后本地保存 `QQ → user_id` 映射（JSON 存储）
-- **签到**：`GET /api/user/{id}` 取出用户 → quota 加上随机额度 → `PUT /api/user/` 更新（管理员权限）；本地记录上次签到时间实现冷却
+- **绑定**：`/密码绑定` 调用 `POST /api/user/login` 验证用户名密码；`/绑定 <ID>` 私聊验证后绑定；本地保存 `QQ → user_id` 映射及密码（XOR+Base64 混淆存储，供官方签到模式自动登录使用）
+- **签到**：
+  - `official` 模式：用保存的密码自动登录站点，调用官方内置签到接口 `POST /api/user/checkin`，金额由站点后台"签到设置"（min/max quota）决定；站点未启用官方签到时自动降级为兑换码模式
+  - `code` 模式：管理员 API 创建兑换码（`POST /api/redemption/`），私聊发给用户到网站钱包页手动兑换
+  - ⚠️ 新版 new-api 的 `PUT /api/user/` 已不再支持修改用户额度（quota 被官方排除），因此没有"直接改余额"的签到实现
 - **余额**：`GET /api/user/{id}`，`quota / quota_per_unit` 换算为美元
 - **退群**：监听 OneBot（aiocqhttp / NapCat / Lagrange 等）的 `notice.group_decrease` 事件，匹配绑定关系后解绑/删号（`DELETE /api/user/{id}`）
 
