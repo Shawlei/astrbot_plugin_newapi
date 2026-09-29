@@ -66,6 +66,25 @@ class Store:
             return None
 
 
+def _extract_user_list(data) -> list:
+    """从 /api/user/search 等响应中稳健地提取用户列表（兼容各种版本/限流响应形态）"""
+    if not isinstance(data, dict):
+        return []
+    d = data.get("data")
+    if isinstance(d, list):
+        return [u for u in d if isinstance(u, dict)]
+    if isinstance(d, dict):
+        # 部分版本/分支返回分页对象 {"items": [...]} 等
+        for key in ("items", "records", "list", "users", "data"):
+            v = d.get(key)
+            if isinstance(v, list):
+                return [u for u in v if isinstance(u, dict)]
+        if "id" in d:  # 单个用户对象
+            return [d]
+    # data 是字符串（通常是限流/错误提示）→ 视为空结果
+    return []
+
+
 # ============================================================
 # NewAPI 客户端（超级管理员令牌）
 # ============================================================
@@ -84,7 +103,7 @@ class NewAPIClient:
         }
 
     async def _request(self, method: str, path: str, *, json_body=None,
-                       params=None, headers=None, timeout: int = 30, retries: int = 1):
+                       params=None, headers=None, timeout: int = 30, retries: int = 2):
         if not self.base_url:
             return 0, {"success": False, "message": "未配置 NewAPI 站点地址(base_url)"}
         url = f"{self.base_url}{path}"
@@ -98,17 +117,24 @@ class NewAPIClient:
                         method, url, json=json_body, params=params,
                         headers=headers or self._admin_headers(),
                     ) as resp:
-                        try:
-                            data = await resp.json(content_type=None)
-                        except Exception:
-                            data = {"success": False, "message": f"HTTP {resp.status} 非JSON响应"}
-                        return resp.status, data
+                        # 限流/服务端异常：退避后重试
+                        if resp.status == 429:
+                            last_err = "站点限流(429 Too Many Requests)，已自动重试仍失败，请调高站点 API 限流阈值或将机器人 IP 加白"
+                        elif resp.status >= 500:
+                            last_err = f"站点服务异常(HTTP {resp.status})"
+                        else:
+                            try:
+                                data = await resp.json(content_type=None)
+                            except Exception:
+                                data = {"success": False,
+                                        "message": f"HTTP {resp.status} 非JSON响应"}
+                            return resp.status, data
             except asyncio.TimeoutError:
                 last_err = "请求超时（站点 30 秒内未响应）"
             except aiohttp.ClientError as e:
                 last_err = f"网络请求失败: {e}"
             if attempt < retries:
-                await asyncio.sleep(1)  # 网络类失败自动重试一次
+                await asyncio.sleep(2 + attempt * 3)  # 退避：2s、5s
         return 0, {"success": False, "message": str(last_err)}
 
     async def login(self, username: str, password: str):
@@ -464,12 +490,15 @@ class NewAPIPlugin(Star):
         # 查询用户（新建或找回）
         uid, user = None, None
         status, data = await self.client.search_user(username)
-        for u in (data.get("data") or []):
+        for u in _extract_user_list(data):
             if str(u.get("username")) == username:
                 uid, user = u.get("id"), dict(u)
                 break
         if uid is None:
-            yield event.plain_result("❌ 注册失败：未能查询到用户信息，请联系管理员")
+            site_msg = data.get("message", "") if isinstance(data, dict) else ""
+            yield event.plain_result(
+                f"❌ 注册失败：创建账号后未能查询到用户信息（{site_msg or '可能被站点限流，请稍后再试'}）"
+            )
             return
 
         if not is_new:
@@ -657,7 +686,7 @@ class NewAPIPlugin(Star):
             yield event.plain_result("用法：/newapi用户 <用户名或关键词>")
             return
         status, data = await self.client.search_user(keyword)
-        users = data.get("data") or [] if data.get("success") else []
+        users = _extract_user_list(data)
         if not users:
             yield event.plain_result("未找到相关用户")
             return
