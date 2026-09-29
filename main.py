@@ -155,6 +155,7 @@ class NewAPIPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         self.store = Store(self._get_data_dir() / "bindings.json")
+        self.pending_binds = {}  # qq -> {user_id, username, expire, tries} ID绑定待验证
         self.client = NewAPIClient(
             str(self._cfg("base_url", "")),
             str(self._cfg("admin_token", "")),
@@ -413,28 +414,41 @@ class NewAPIPlugin(Star):
 
         # 创建用户
         status, data = await self.client.create_user(username, password)
-        if not data.get("success"):
-            msg = data.get("message", "未知错误")
-            hint = "（该 QQ 可能已注册过，如需帮助请联系管理员）" if "已存在" in msg or "已" in msg else ""
-            yield event.plain_result(f"❌ 注册失败：{msg} {hint}")
-            return
+        is_new = bool(data.get("success"))
+        if not is_new:
+            msg = str(data.get("message", "未知错误"))
+            # 用户名已存在（此前注册过）：不报错，走找回流程
+            if "Duplicate" not in msg and "已存在" not in msg:
+                yield event.plain_result(f"❌ 注册失败：{msg}")
+                return
 
-        # 查出新用户 ID 并设置注册默认分组
+        # 查询用户（新建或找回）
         uid, user = None, None
         status, data = await self.client.search_user(username)
         for u in (data.get("data") or []):
             if str(u.get("username")) == username:
-                uid, user = u.get("id"), u
+                uid, user = u.get("id"), dict(u)
                 break
+        if uid is None:
+            yield event.plain_result("❌ 注册失败：未能查询到用户信息，请联系管理员")
+            return
 
+        if not is_new:
+            # 找回流程：该账号不能已被其他 QQ 绑定
+            other = await self.store.find_by_user_id(uid)
+            if other and other != qq:
+                yield event.plain_result(f"❌ 注册失败：该账号已被其他 QQ({other}) 绑定")
+                return
+
+        # 设置注册默认分组（找回时同时重置密码）
         reg_group = str(self._cfg("register_group", "default") or "default").strip()
-        group_ok = True
-        if uid and user is not None:
-            user["group"] = reg_group
-            status, data = await self.client.update_user(user)
-            group_ok = bool(data.get("success"))
-            if not group_ok:
-                logger.error(f"[newapi] 设置注册分组失败: {data.get('message')}")
+        user["group"] = reg_group
+        if not is_new:
+            user["password"] = password  # 管理员权限重置密码
+        status, data = await self.client.update_user(user)
+        group_ok = bool(data.get("success"))
+        if not group_ok:
+            logger.error(f"[newapi] 设置注册分组失败: {data.get('message')}")
 
         await self.store.set(qq, {
             "user_id": uid,
@@ -445,8 +459,9 @@ class NewAPIPlugin(Star):
         })
 
         base = self.client.base_url
+        title = "注册成功！" if is_new else "找回成功！已为你重置密码"
         sent = await self._send_private(event, qq,
-            f"🎉 注册成功！\n"
+            f"🎉 {title}\n"
             f"👤 账号：{username}\n"
             f"🔑 密码：{password}\n"
             f"👥 分组：{reg_group}\n"
@@ -463,10 +478,10 @@ class NewAPIPlugin(Star):
                 "注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理"
             )
 
-    # ---------- 按 ID 绑定 ----------
+    # ---------- 按 ID 绑定（私聊验证两步流程） ----------
     @filter.command("绑定", alias={"绑定ID", "绑定id"})
     async def bind_id(self, event: AstrMessageEvent, user_id: str = ""):
-        """绑定指定 ID 的 NewAPI 账号并更换分组：/绑定 1"""
+        """发起 ID 绑定：/绑定 1，随后私聊输入账号与密码完成验证"""
         if not user_id or not user_id.isdigit():
             yield event.plain_result("用法：/绑定 <NewAPI用户ID数字>，例如 /绑定 1")
             return
@@ -494,28 +509,105 @@ class NewAPIPlugin(Star):
             )
             return
 
-        await self.store.set(qq, {
+        # 记录待验证绑定，私聊收集账号密码
+        self.pending_binds[qq] = {
             "user_id": int(user_id),
             "username": user.get("username", ""),
-            "bound_at": int(time.time()),
-            "last_checkin": 0,
-        })
-
-        # 更换分组
-        bind_group = str(self._cfg("bind_group", "") or "").strip()
-        group_msg = ""
-        if bind_group and str(user.get("group")) != bind_group:
-            user["group"] = bind_group
-            status, data = await self.client.update_user(user)
-            if data.get("success"):
-                group_msg = f"，分组已更换为 {bind_group}"
-            else:
-                group_msg = f"（⚠️ 更换分组失败：{data.get('message')}）"
-
-        yield event.plain_result(
-            f"✅ 绑定成功！账号：{user.get('username', user_id)}{group_msg}\n"
-            f"发送 /余额 查询额度，/签到 每日打卡"
+            "expire": time.time() + 600,
+            "tries": 3,
+        }
+        sent = await self._send_private(event, qq,
+            f"🔐 你正在绑定 NewAPI 账号（ID:{user_id}，用户名：{user.get('username', '未知')}）\n"
+            f"请在 10 分钟内私聊回复：账号 密码（用空格分隔）\n"
+            f"例如：{user.get('username', '账号')} 你的密码\n"
+            f"验证通过即完成绑定，共 3 次尝试机会。发送 /取消绑定 可放弃"
         )
+        if sent:
+            yield event.plain_result("✅ 已私聊你，请按私聊指引回复账号与密码完成绑定")
+        else:
+            del self.pending_binds[qq]
+            yield event.plain_result("私聊发送失败：请先添加我为好友，再重新使用 /绑定 <ID>")
+
+    @filter.command("取消绑定", alias={"取消绑定ID"})
+    async def cancel_bind(self, event: AstrMessageEvent):
+        qq = str(event.get_sender_id()).strip()
+        if self.pending_binds.pop(qq, None) is not None:
+            yield event.plain_result("已取消本次绑定")
+        else:
+            yield event.plain_result("你没有进行中的绑定操作")
+
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    async def on_private_bind_verify(self, event: AstrMessageEvent):
+        """私聊验证：处理待绑定用户发来的 账号 密码"""
+        try:
+            qq = str(event.get_sender_id()).strip()
+            pending = self.pending_binds.get(qq)
+            if not pending:
+                return
+            text = (event.message_str or "").strip()
+            if not text or text.startswith("/"):
+                return  # 让其他命令正常处理
+
+            if time.time() > pending["expire"]:
+                del self.pending_binds[qq]
+                yield event.plain_result("绑定验证已超时，请回到群里重新使用 /绑定 <ID>")
+                return
+
+            parts = text.split()
+            if len(parts) != 2:
+                yield event.plain_result("格式不对，请回复：账号 密码（用空格分隔）")
+                return
+            username, password = parts
+
+            status, data = await self.client.login(username, password)
+            if not (data.get("success") and data.get("data")):
+                pending["tries"] -= 1
+                if pending["tries"] <= 0:
+                    del self.pending_binds[qq]
+                    yield event.plain_result("账号或密码错误次数过多，绑定已取消，请回群重新发起")
+                else:
+                    yield event.plain_result(
+                        f"账号或密码错误，还剩 {pending['tries']} 次机会，请重新回复：账号 密码"
+                    )
+                return
+
+            login_user = data["data"]
+            if str(login_user.get("id")) != str(pending["user_id"]):
+                yield event.plain_result(
+                    f"该账号（ID:{login_user.get('id')}）与你要绑定的 ID（{pending['user_id']}）不一致，绑定取消"
+                )
+                del self.pending_binds[qq]
+                return
+
+            # 验证通过：写入绑定并更换分组
+            user_id = int(pending["user_id"])
+            del self.pending_binds[qq]
+            await self.store.set(qq, {
+                "user_id": user_id,
+                "username": login_user.get("username", username),
+                "bound_at": int(time.time()),
+                "last_checkin": 0,
+            })
+
+            group_msg = ""
+            bind_group = str(self._cfg("bind_group", "") or "").strip()
+            if bind_group and str(login_user.get("group")) != bind_group:
+                status, data = await self.client.get_user(user_id)
+                if data.get("success") and data.get("data"):
+                    u = data["data"]
+                    u["group"] = bind_group
+                    status, data = await self.client.update_user(u)
+                    if data.get("success"):
+                        group_msg = f"，分组已更换为 {bind_group}"
+                    else:
+                        group_msg = f"（⚠️ 更换分组失败：{data.get('message')}）"
+
+            yield event.plain_result(
+                f"✅ 绑定成功！账号：{login_user.get('username', username)}{group_msg}\n"
+                f"回到群里即可使用 /签到 /余额 等命令"
+            )
+        except Exception:
+            logger.error(f"[newapi] 私聊绑定验证出错:\n{traceback.format_exc()}")
 
     # ---------- 管理员命令 ----------
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -558,7 +650,7 @@ class NewAPIPlugin(Star):
         yield event.plain_result(
             "📖 NewAPI 插件命令：\n"
             "/注册 - 自助注册账号（密码私聊发送）\n"
-            "/绑定 <ID> - 绑定指定 NewAPI 账号并更换分组\n"
+            "/绑定 <ID> - 绑定指定 NewAPI 账号（私聊验证账号密码）并更换分组\n"
             "/newapi绑定 <用户名> <密码> - 验证绑定（建议私聊）\n"
             "/newapi解绑 - 解除绑定\n"
             "/签到 - 每日签到领额度\n"
