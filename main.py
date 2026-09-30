@@ -810,39 +810,21 @@ class NewAPIPlugin(Star):
             return None
 
     async def _send_private(self, event: AstrMessageEvent, qq: str, text: str) -> bool:
-        """主动私聊发送消息"""
+        """主动私聊发送消息。
+
+        群内触发时附带 group_id，走「临时会话」直接私聊群友（无需加好友），
+        需要机器人为群管理员/群主（NapCat、Lagrange 等 OneBot 实现均支持）。
+        """
         try:
             if self._is_aiocqhttp(event):
-                await event.bot.api.call_action(
-                    "send_private_msg", user_id=int(qq), message=text
-                )
+                params = {"user_id": int(qq), "message": text}
+                if self._is_group(event) and self._cfg("private_temp_session", True):
+                    params["group_id"] = int(event.get_group_id())
+                await event.bot.api.call_action("send_private_msg", **params)
                 return True
         except Exception as e:
             logger.error(f"[newapi] 私聊发送失败: {e}")
         return False
-
-    async def _send_group_recall(self, event: AstrMessageEvent, text: str, delay: int) -> bool:
-        """私聊失败时的兜底：发到群里，delay 秒后自动撤回"""
-        if not self._is_aiocqhttp(event) or not self._is_group(event):
-            return False
-        try:
-            result = await event.bot.api.call_action(
-                "send_group_msg", group_id=int(event.get_group_id()), message=text
-            )
-            mid = result.get("message_id") if isinstance(result, dict) else None
-            if mid is None:
-                return False
-            async def _del():
-                await asyncio.sleep(delay)
-                try:
-                    await event.bot.api.call_action("delete_msg", message_id=mid)
-                except Exception:
-                    pass
-            asyncio.ensure_future(_del())
-            return True
-        except Exception as e:
-            logger.error(f"[newapi] 群发撤回兜底失败: {e}")
-            return False
 
     # ---------- 绑定 ----------
     @filter.command("密码绑定", alias={"newapi绑定", "绑定newapi", "绑定账号"})
@@ -1096,6 +1078,34 @@ class NewAPIPlugin(Star):
             f"💰 剩余额度：{self._fmt_quota(u.get('quota'))}\n"
             f"📊 累计消耗：${used_usd:.4f}\n"
             f"🔢 调用次数：{u.get('request_count', 0)}"
+        )
+
+    # ---------- 找回密码 ----------
+    @filter.command("找回密码", alias={"我的密码", "获取密码", "查密码"})
+    async def get_password(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
+        """私聊查询自己的账号密码（仅私聊可用，防止密码泄露到群里）"""
+        async for r in self._get_password_impl(event):
+            yield r
+
+    async def _get_password_impl(self, event: AstrMessageEvent):
+        if self._is_group(event):
+            yield event.plain_result("出于安全考虑，请私聊我发送 /找回密码 获取账号密码")
+            return
+        qq = str(event.get_sender_id()).strip()
+        rec = await self.store.get(qq)
+        if not rec:
+            yield event.plain_result("你还没有绑定/注册过账号，请先在群里使用 /注册 或私聊 /密码绑定")
+            return
+        pwd = deobfuscate(rec.get("pwd", ""), self._pwd_key())
+        if not pwd:
+            yield event.plain_result("绑定记录中没有保存密码，请 /解绑 后重新注册/绑定")
+            return
+        yield event.plain_result(
+            f"👤 账号：{rec.get('username')}\n"
+            f"🔑 密码：{pwd}\n"
+            f"🌐 登录：{self.client.base_url}"
         )
 
     # ---------- 红包 ----------
@@ -1551,20 +1561,10 @@ class NewAPIPlugin(Star):
             )
             if sent:
                 yield event.plain_result("✅ 注册成功！账号密码已私聊发送给你，请查收～")
-            elif self._cfg("recall_when_private_fail", True) and self._is_group(event):
-                delay = int(self._cfg("recall_delay_seconds", 10) or 10)
-                if await self._send_group_recall(event,
-                    f"🎉 {title}\n👤 账号：{username}\n🔑 密码：{password}\n"
-                    f"👥 分组：{reg_group}\n🌐 登录：{self.client.base_url}\n"
-                    f"⚠️ 本条 {delay} 秒后自动撤回，请立即保存！",
-                    delay):
-                    yield event.plain_result(
-                        f"✅ 注册成功！账号密码已发到群里，{delay} 秒后自动撤回，请立即保存"
-                    )
-                    return
-                yield event.plain_result("注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理")
             else:
-                yield event.plain_result("注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理")
+                yield event.plain_result(
+                    "✅ 注册成功！但主动私聊发送失败，请私聊我发送 /找回密码 获取账号密码"
+                )
             return
 
         # 创建用户
@@ -1637,21 +1637,10 @@ class NewAPIPlugin(Star):
                 "✅ 注册成功！账号密码已私聊发送给你，请查收～"
                 + ("" if group_ok else "\n⚠️ 默认分组设置失败，请联系管理员")
             )
-        elif self._cfg("recall_when_private_fail", True) and self._is_group(event):
-            delay = int(self._cfg("recall_delay_seconds", 10) or 10)
-            if await self._send_group_recall(event,
-                f"🎉 注册成功！\n👤 账号：{username}\n🔑 密码：{password}\n"
-                f"👥 分组：{reg_group}\n🌐 登录：{base}\n"
-                f"⚠️ 本条 {delay} 秒后自动撤回，请立即保存！",
-                delay):
-                yield event.plain_result(
-                    f"✅ 注册成功！账号密码已发到群里，{delay} 秒后自动撤回，请立即保存"
-                )
-            else:
-                yield event.plain_result("注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理")
         else:
             yield event.plain_result(
-                "注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理"
+                "✅ 注册成功！但主动私聊发送失败，请私聊我发送 /找回密码 获取账号密码"
+                + ("" if group_ok else "\n⚠️ 默认分组设置失败，请联系管理员")
             )
 
     # ---------- 按 ID 绑定（私聊验证两步流程） ----------
