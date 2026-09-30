@@ -479,9 +479,20 @@ def _extract_user_list(data) -> list:
 
 
 def _extract_at_qqs(event) -> list:
-    """从原始事件中提取被 @ 的 QQ 号列表（兼容 OneBot array / CQ 码字符串两种形态），去重保序"""
+    """提取被 @ 的 QQ 号列表（结构化 At 消息段 > OneBot CQ 码 > '@昵称(QQ号)' 文本），去重保序"""
     import re
     qqs = []
+    # 1) 结构化消息段（AstrBot 标准 API）
+    try:
+        from astrbot.api.message_components import At
+        for seg in event.get_messages():
+            if isinstance(seg, At):
+                q = getattr(seg, "qq", None)
+                if q:
+                    qqs.append(str(q))
+    except Exception:
+        pass
+    # 2) OneBot 原始事件（CQ 码 array / string）
     raw = getattr(getattr(event, "message_obj", None), "raw_event", None)
     if isinstance(raw, dict):
         msg = raw.get("message")
@@ -493,10 +504,14 @@ def _extract_at_qqs(event) -> list:
                         qqs.append(str(q))
         elif isinstance(msg, str):
             qqs += re.findall(r"\[CQ:at,qq=(\d+)\]", msg)
+    # 3) 文本兜底：AstrBot 可能把 @ 渲染成 '@昵称(QQ号)' 或 '@QQ号'
     text = getattr(event, "message_str", "") or ""
     qqs += re.findall(r"\[CQ:at,qq=(\d+)\]", text)
+    qqs += re.findall(r"@[^0-9\s]*?\((\d{5,})\)", text)
+    qqs += re.findall(r"@(\d{5,})", text)
     seen, out = set(), []
     for q in qqs:
+        q = str(q)
         if q and q not in seen:
             seen.add(q)
             out.append(q)
@@ -1243,9 +1258,13 @@ class NewAPIPlugin(Star):
         """解析抢劫目标 QQ：优先 @，其次纯数字 QQ 号，再次 NewAPI 用户名；返回 (qq, errmsg)"""
         arg = (arg or "").strip()
         sender = str(event.get_sender_id()).strip()
-        # 1) @ 提及（排除发送者自己）
+        try:
+            self_id = str(event.get_self_id())
+        except Exception:
+            self_id = None
+        # 1) @ 提及（排除发送者自己与机器人自身）
         for q in _extract_at_qqs(event):
-            if q != sender:
+            if q != sender and q != self_id:
                 return q, None
         # 2) 纯数字 → QQ 号
         if arg.isdigit():
@@ -1326,26 +1345,24 @@ class NewAPIPlugin(Star):
             yield event.plain_result(f"抢劫冷却中，还需 {int(remain)} 秒")
             return
 
-        per = int(_num("quota_per_unit", 500000))
         rate = _num("db.rob.success_rate", 0.5)
-        lo = _num("db.rob.amount_min_usd", 0.05)
-        hi = _num("db.rob.amount_max_usd", 0.5)
-        penalty_usd = _num("db.rob.penalty_usd", 0.1)
-        protect = _num("db.rob.protect_balance_usd", 0)
-        if lo > hi:
-            lo, hi = hi, lo
+        amount_min = int(_num("db.rob.amount_min", 1000))
+        amount_max = int(_num("db.rob.amount_max", 10000))
+        penalty = int(_num("db.rob.penalty", 1000))
+        protect = int(_num("db.rob.protect_balance", 0))
+        if amount_min > amount_max:
+            amount_min, amount_max = amount_max, amount_min
 
         target_quota = int(target_u.get("quota") or 0)
-        protect_raw = int(round(protect * per))
-        if target_quota <= protect_raw:
+        if target_quota <= protect:
             yield event.plain_result("目标余额不足（低于保护线），无法抢劫")
             return
 
-        # 计算抢劫金额（不超过目标余额 - 保护线）
-        amount = int(round(random.uniform(lo, hi) * per))
+        # 计算抢劫金额：在 [min,max] 内随机抽整数，不超过目标余额 - 保护线
+        amount = random.randint(amount_min, amount_max)
         if amount <= 0:
             amount = 1
-        cap = target_quota - protect_raw
+        cap = target_quota - protect
         if amount > cap:
             amount = cap
         if amount <= 0:
@@ -1374,11 +1391,10 @@ class NewAPIPlugin(Star):
             async with self.store.lock:
                 _mark_cooled()
             yield event.plain_result(
-                f"🔪 抢劫成功！{aname} 从 {tname} 手中抢走 {self._fmt_quota(amount)}"
+                f"🔪 抢劫成功！{aname} 从 {tname} 手中抢走 {amount} 额度"
             )
         else:
             # 失败：先原子扣抢劫者赔偿，再赔给目标（入账失败则回滚）
-            penalty = int(round(penalty_usd * per))
             if penalty <= 0:
                 penalty = 1
             if not await db.adjust(attacker_uid, -penalty, require_balance=True):
@@ -1391,7 +1407,7 @@ class NewAPIPlugin(Star):
             async with self.store.lock:
                 _mark_cooled()
             yield event.plain_result(
-                f"😅 抢劫失败！{aname} 被 {tname} 反杀，赔偿 {self._fmt_quota(penalty)}"
+                f"😅 抢劫失败！{aname} 被 {tname} 反杀，赔偿 {penalty} 额度"
             )
 
     # ---------- 自助注册 ----------
