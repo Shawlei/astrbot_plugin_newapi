@@ -3,6 +3,16 @@
 所有重要变更都记录在此文件中。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.0.23] - 2026-09-30
+
+### 新增
+- 使用排行榜：`/排行榜`（别名 `/排行`、`/榜单`），可选参数 `llm` / `调用` / `消耗`（不填 = 全部三个榜单）
+  - 🧠 LLM 模型热度榜：按 `logs` 表统计各模型调用次数与消耗额度
+  - 📞 调用次数榜：按 `users.request_count` 排序
+  - 💰 额度消耗榜：按 `users.used_quota` 排序
+- 通过 AstrBot HTML 文转图（`self.html_render` → Chromium）渲染成图片发送；t2i 服务不可用时自动降级为纯文本
+- 配置项 `rank_enabled`（默认开）、`rank_top_n`（默认 10）；排行榜需数据库模式
+
 ## [0.0.22] - 2026-09-30
 
 ### 修复

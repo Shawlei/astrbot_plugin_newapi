@@ -396,6 +396,26 @@ class MySQLQuota:
             logger.error(f"[newapi] 数据库额度操作失败: {e}")
             return False
 
+    # ---- 排行榜 ----
+    async def top_models(self, limit: int = 10):
+        """LLM 模型热度榜：统计各模型调用次数与消耗额度（logs 表，type=1 为消耗记录）"""
+        sql = ("SELECT model_name, COUNT(*) AS cnt, COALESCE(SUM(quota), 0) AS total_quota "
+               "FROM logs WHERE type=1 AND model_name IS NOT NULL AND model_name <> '' "
+               "GROUP BY model_name ORDER BY cnt DESC, total_quota DESC LIMIT %s")
+        return await self.query_all(sql, (int(limit),)) or []
+
+    async def top_by_calls(self, limit: int = 10):
+        """调用次数榜：按 users.request_count 排序"""
+        sql = ("SELECT id, username, display_name, request_count FROM users "
+               "WHERE deleted_at IS NULL ORDER BY request_count DESC LIMIT %s")
+        return await self.query_all(sql, (int(limit),)) or []
+
+    async def top_by_quota(self, limit: int = 10):
+        """额度消耗榜：按 users.used_quota 排序"""
+        sql = ("SELECT id, username, display_name, used_quota FROM users "
+               "WHERE deleted_at IS NULL ORDER BY used_quota DESC LIMIT %s")
+        return await self.query_all(sql, (int(limit),)) or []
+
 
 class HongbaoStore:
     """红包持久化（JSON）"""
@@ -1966,6 +1986,176 @@ class NewAPIPlugin(Star):
         else:
             yield event.plain_result(f"QQ({qq}) 没有绑定记录")
 
+    # ---------- 排行榜 ----------
+    @filter.command("排行榜", alias={"排行", "榜单"})
+    async def rank(self, event: AstrMessageEvent, which: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """使用排行榜：/排行榜 [llm|调用|消耗]，不填=全部三个榜单（渲染成图片）"""
+        async for r in self._rank_impl(event, which):
+            yield r
+
+    async def _rank_impl(self, event: AstrMessageEvent, which: str = ""):
+        if not self._cfg("rank_enabled", True):
+            yield event.plain_result("排行榜功能未开启（可在插件配置打开 rank_enabled）")
+            return
+        db = await self._db()
+        if db is None:
+            yield event.plain_result("排行榜需要数据库模式：请在插件配置开启数据库模式并填好连接信息")
+            return
+        top_n = int(self._cfg("rank_top_n", 10) or 10)
+
+        which = (which or "").strip().lower()
+        show = {"llm": False, "calls": False, "quota": False}
+        if which in ("", "all", "全部", "all"):
+            show = {"llm": True, "calls": True, "quota": True}
+        elif which in ("llm", "模型", "模型榜"):
+            show["llm"] = True
+        elif which in ("调用", "次数", "调用榜"):
+            show["calls"] = True
+        elif which in ("消耗", "额度", "消耗榜", "quota"):
+            show["quota"] = True
+        else:
+            yield event.plain_result("用法：/排行榜 [llm|调用|消耗]（不填 = 全部三个榜单）")
+            return
+
+        per = int(self._cfg("quota_per_unit", 500000) or 500000)
+        models = await db.top_models(top_n) if show["llm"] else []
+        calls = await db.top_by_calls(top_n) if show["calls"] else []
+        quota = await db.top_by_quota(top_n) if show["quota"] else []
+
+        if not (models or calls or quota):
+            yield event.plain_result("暂无调用/消耗记录，排行榜为空")
+            return
+
+        try:
+            html = self._build_rank_html(models, calls, quota, per, top_n)
+            url = await self.html_render(html, {})
+            yield event.image_result(url)
+        except Exception as e:
+            logger.error(f"[newapi] 排行榜 HTML 渲染失败，回退文本: {e}")
+            yield event.plain_result(self._rank_text(models, calls, quota, per))
+
+    @staticmethod
+    def _fmt_usd_int(q, per):
+        try:
+            q = int(q or 0)
+        except Exception:
+            q = 0
+        return f"{q / per:.2f}"
+
+    def _build_rank_html(self, models, calls, quota, per, top_n) -> str:
+        def esc(s):
+            return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+                    .replace(">", "&gt;").replace('"', "&quot;"))
+
+        def badge(i):
+            if i == 1:
+                cls = "b1"
+            elif i == 2:
+                cls = "b2"
+            elif i == 3:
+                cls = "b3"
+            else:
+                cls = "bn"
+            return '<span class="badge ' + cls + '">' + str(i) + '</span>'
+
+        sections = []
+        if models:
+            rows = []
+            for i, m in enumerate(models, 1):
+                name = esc(m.get("model_name") or "未知模型")
+                cnt = int(m.get("cnt") or 0)
+                usd = self._fmt_usd_int(m.get("total_quota"), per)
+                rows.append(
+                    '<div class="row"><div class="rank">' + badge(i) + '</div>'
+                    '<div class="name">' + name + '</div>'
+                    '<div class="val">' + str(cnt) + ' 次 · $' + usd + '</div></div>'
+                )
+            sections.append('<div class="section"><div class="stitle">🧠 LLM 模型热度榜</div>'
+                             + "".join(rows) + '</div>')
+
+        if calls:
+            rows = []
+            for i, u in enumerate(calls, 1):
+                name = esc(u.get("display_name") or u.get("username") or "?")
+                cnt = int(u.get("request_count") or 0)
+                rows.append(
+                    '<div class="row"><div class="rank">' + badge(i) + '</div>'
+                    '<div class="name">' + name + '</div>'
+                    '<div class="val">' + str(cnt) + ' 次</div></div>'
+                )
+            sections.append('<div class="section"><div class="stitle">📞 调用次数榜</div>'
+                             + "".join(rows) + '</div>')
+
+        if quota:
+            rows = []
+            for i, u in enumerate(quota, 1):
+                name = esc(u.get("display_name") or u.get("username") or "?")
+                usd = self._fmt_usd_int(u.get("used_quota"), per)
+                rows.append(
+                    '<div class="row"><div class="rank">' + badge(i) + '</div>'
+                    '<div class="name">' + name + '</div>'
+                    '<div class="val">$' + usd + '</div></div>'
+                )
+            sections.append('<div class="section"><div class="stitle">💰 额度消耗榜</div>'
+                             + "".join(rows) + '</div>')
+
+        body = "".join(sections)
+
+        css = '''<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { width:680px; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:linear-gradient(160deg,#eef2ff,#fdf2f8); padding:28px; color:#1f2937; }
+.wrap { background:#ffffff; border-radius:20px; padding:28px 24px; box-shadow:0 10px 40px rgba(0,0,0,.08); }
+.header { text-align:center; margin-bottom:6px; }
+.header .title { font-size:28px; font-weight:800; background:linear-gradient(90deg,#6366f1,#ec4899); -webkit-background-clip:text; background-clip:text; color:transparent; }
+.header .sub { font-size:13px; color:#9ca3af; margin-top:6px; }
+.section { margin-top:22px; }
+.stitle { font-size:16px; font-weight:700; color:#374151; padding-bottom:8px; border-bottom:2px solid #f3f4f6; margin-bottom:4px; }
+.row { display:flex; align-items:center; padding:8px 6px; border-bottom:1px dashed #f3f4f6; }
+.row:last-child { border-bottom:none; }
+.rank { width:34px; }
+.badge { display:inline-flex; width:24px; height:24px; border-radius:7px; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#fff; background:#d1d5db; }
+.b1 { background:linear-gradient(135deg,#fbbf24,#f59e0b); }
+.b2 { background:linear-gradient(135deg,#cbd5e1,#94a3b8); }
+.b3 { background:linear-gradient(135deg,#fcd34d,#d97706); }
+.bn { background:#e5e7eb; color:#6b7280; }
+.name { flex:1; font-size:15px; font-weight:600; color:#1f2937; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 8px; }
+.val { font-size:13px; font-weight:600; color:#6366f1; white-space:nowrap; }
+.footer { text-align:center; font-size:12px; color:#c4c4c4; margin-top:20px; }
+</style></head><body><div class="wrap">
+<div class="header"><div class="title">📊 NewAPI 使用排行榜</div><div class="sub">LLM 模型热度 · 调用次数 · 额度消耗</div></div>'''
+
+        tail = '<div class="footer">数据来自站点数据库 · 统计前 ' + str(top_n) + ' 名</div></div></body></html>'
+        return css + body + tail
+
+    @staticmethod
+    def _rank_text(models, calls, quota, per) -> str:
+        lines = ["📊 NewAPI 使用排行榜"]
+        if models:
+            lines.append("")
+            lines.append("🧠 LLM 模型热度榜")
+            for i, m in enumerate(models, 1):
+                usd = NewAPIPlugin._fmt_usd_int(m.get("total_quota"), per)
+                lines.append(f"{i}. {m.get('model_name')} — {int(m.get('cnt') or 0)} 次 / ${usd}")
+        if calls:
+            lines.append("")
+            lines.append("📞 调用次数榜")
+            for i, u in enumerate(calls, 1):
+                name = u.get("display_name") or u.get("username") or "?"
+                lines.append(f"{i}. {name} — {int(u.get('request_count') or 0)} 次")
+        if quota:
+            lines.append("")
+            lines.append("💰 额度消耗榜")
+            for i, u in enumerate(quota, 1):
+                name = u.get("display_name") or u.get("username") or "?"
+                usd = NewAPIPlugin._fmt_usd_int(u.get("used_quota"), per)
+                lines.append(f"{i}. {name} — ${usd}")
+        return "\n".join(lines)
+
     @filter.command("帮助", alias={"newapi帮助", "newapi菜单"})
     async def help_cmd(self, event: AstrMessageEvent):
         if not self._cfg("slash_enabled", True):
@@ -1988,6 +2178,7 @@ class NewAPIPlugin(Star):
             "/发红包 <个数> <总金额> - 发拼手气红包（真实扣款）\n"
             "/抢红包 - 抢群内红包（真实入账）\n"
             "/抢劫 @某人 - 抢劫群友余额（真实扣款/入账，需开启抢劫玩法）\n"
+            "/排行榜（/排行）[llm|调用|消耗] - 使用排行榜（模型热度/调用次数/额度消耗，渲染成图片）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
             "/帮助 - 本命令列表\n"
             "管理员：/查用户 <用户名/数字ID/QQ号/@某人>、/强制解绑 <QQ号>\n"
@@ -2029,6 +2220,7 @@ class NewAPIPlugin(Star):
                     "抢劫": (self._rob_impl, 1),
                     "查用户": (self._admin_search_impl, 1),
                     "强制解绑": (self._admin_unbind_impl, 1),
+                    "排行榜": (self._rank_impl, 0),
                     "帮助": (self._help_impl, 0),
                 }
                 if cmd not in handlers:

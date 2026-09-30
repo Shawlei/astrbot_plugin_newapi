@@ -81,6 +81,18 @@
     "type": "float",
     "default": 0.5
   },
+  "rank_enabled": {
+    "description": "是否开启使用排行榜",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后 /排行榜 生成「LLM 模型热度 / 调用次数 / 额度消耗」三个榜单图片（需数据库模式，直接查站点 logs/users 表）"
+  },
+  "rank_top_n": {
+    "description": "排行榜显示前 N 名",
+    "type": "int",
+    "default": 10,
+    "hint": "每个榜单最多显示前 N 名，例如 10 = 前 10 名"
+  },
   "register_enabled": {
     "description": "是否开启群内自助注册",
     "type": "bool",
