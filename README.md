@@ -246,7 +246,7 @@ exit;
 - **数据库模式（推荐）**：直连站点 MySQL（aiomysql）
   - 余额：`SELECT users`
   - 签到：判重 `checkins` 表 → `UPDATE users.quota` → 插入签到记录（站点日历可见）
-  - 绑定验证 / 注册：站点密码为标准 bcrypt（兼容 sha256 / md5 等常见变体），直接校验与生成
+  - 绑定验证 / 注册：自动探测站点密码哈希算法（bcrypt / argon2 / sha256 / md5），直接校验与生成
   - 分组变更 / 退群删号（软删除 users + tokens）/ 用户搜索：纯 SQL
   - 红包：发起时原子扣款（余额不足自动失败），抢到直接入账，过期自动退回
 - **API 模式（回退）**：管理员令牌调 Admin API

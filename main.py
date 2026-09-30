@@ -97,6 +97,7 @@ class MySQLQuota:
     def __init__(self, cfg_getter):
         self._cfg = cfg_getter
         self.pool = None
+        self._algo = None  # 缓存的站点密码哈希算法
 
     def configured(self) -> bool:
         return all(str(self._cfg(k, "") or "").strip()
@@ -214,6 +215,23 @@ class MySQLQuota:
                 return None, "bad_hash_format"
             return (user, None) if ok else (None, "wrong_password")
 
+        # Argon2（$argon2id/$argon2i/$argon2d，新一代站点分支常用）：本地直接校验
+        if raw_hash.startswith("$argon2"):
+            try:
+                from argon2 import PasswordHasher
+                from argon2.exceptions import VerifyMismatchError
+            except ImportError:
+                pass  # 未装 argon2 库，回退到站点登录接口兜底
+            else:
+                try:
+                    PasswordHasher().verify(raw_hash, password)
+                    return user, None
+                except VerifyMismatchError:
+                    return None, "wrong_password"
+                except Exception as e:
+                    logger.error(f"[newapi] argon2 校验异常: {e}（哈希前缀={raw_hash[:7]!r}）")
+                    return None, "bad_hash_format"
+
         # 非 bcrypt：站点为魔改分支时可能用单向哈希存密码，做精确比对兜底
         digest_pool = {
             hashlib.sha256(pwd).hexdigest(),
@@ -235,12 +253,9 @@ class MySQLQuota:
         return None, "bad_hash_format"
 
     async def create_user(self, username: str, password: str, group: str):
-        """数据库模式注册：bcrypt 加密 + 插入 users 表，返回新用户 id"""
-        try:
-            import bcrypt
-            hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-        except Exception as e:
-            logger.error(f"[newapi] bcrypt 不可用: {e}")
+        """数据库模式注册：按站点密码哈希算法加密 + 插入 users 表，返回新用户 id"""
+        hashed = await self.hash_password(password)
+        if not hashed:
             return None
         sql = ("INSERT INTO users (username, password, display_name, role, status, "
                "quota, `group`, created_at) VALUES (%s, %s, %s, 1, 1, 0, %s, %s)")
@@ -256,16 +271,53 @@ class MySQLQuota:
             return None
 
     async def reset_password(self, user_id: int, password: str) -> bool:
-        try:
-            import bcrypt
-            hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-        except Exception as e:
-            logger.error(f"[newapi] bcrypt 不可用: {e}")
+        hashed = await self.hash_password(password)
+        if not hashed:
             return False
         return await self.execute(
             "UPDATE users SET password=%s WHERE id=%s AND deleted_at IS NULL",
             (hashed, user_id),
         )
+
+    async def _detect_algo(self) -> str:
+        """探测站点密码哈希算法（查一个已有用户的 password 前缀），结果缓存"""
+        if self._algo:
+            return self._algo
+        self._algo = "bcrypt"  # 默认标准 new-api
+        row = await self.query_one(
+            "SELECT password FROM users WHERE password IS NOT NULL AND password <> '' "
+            "AND deleted_at IS NULL ORDER BY id LIMIT 1"
+        )
+        if row and row.get("password"):
+            h = str(row["password"])
+            if h.startswith("$argon2"):
+                self._algo = "argon2"
+            elif h.startswith("$2") and len(h) == 60:
+                self._algo = "bcrypt"
+            elif len(h) == 64 and all(c in "0123456789abcdefABCDEF" for c in h):
+                self._algo = "sha256"
+            elif len(h) == 32 and all(c in "0123456789abcdefABCDEF" for c in h):
+                self._algo = "md5"
+        return self._algo
+
+    async def hash_password(self, password: str) -> str:
+        """按站点密码哈希算法生成哈希（保证注册/改密后站点能正常登录）"""
+        algo = await self._detect_algo()
+        try:
+            if algo == "argon2":
+                from argon2 import PasswordHasher
+                return PasswordHasher().hash(password)
+            if algo == "sha256":
+                import hashlib
+                return hashlib.sha256(password.encode()).hexdigest()
+            if algo == "md5":
+                import hashlib
+                return hashlib.md5(password.encode()).hexdigest()
+            import bcrypt
+            return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        except Exception as e:
+            logger.error(f"[newapi] 密码哈希生成失败（{algo}）: {e}")
+            return None
 
     async def search_users(self, keyword: str, limit: int = 10):
         sql = ("SELECT id, username, quota, `group` FROM users WHERE deleted_at IS NULL AND "
