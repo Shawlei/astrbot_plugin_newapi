@@ -179,21 +179,21 @@
             "hint": "0.5 = 五五开；填 1 则必成功，填 0 则必失败"
           },
           "amount_min": {
-            "description": "单次最少抢到（额度数值，1:1）",
-            "type": "int",
-            "default": 1000,
-            "hint": "1:1 直接扣除额度：成功时在 [最小, 最大] 之间随机抽整数，填多少扣多少"
+            "description": "单次最少抢到（美元）",
+            "type": "float",
+            "default": 1.0,
+            "hint": "成功时在 [最小, 最大] 美元之间随机抽金额，按 quota_per_unit 换算成额度真实扣除"
           },
           "amount_max": {
-            "description": "单次最多抢到（额度数值，1:1）",
-            "type": "int",
-            "default": 10000
+            "description": "单次最多抢到（美元）",
+            "type": "float",
+            "default": 10.0
           },
           "penalty": {
-            "description": "抢劫失败赔偿（额度数值，1:1，赔给被抢者）",
-            "type": "int",
-            "default": 1000,
-            "hint": "1:1 直接扣除：失败时从抢劫者余额扣该数值、转入被抢者余额，填多少扣多少"
+            "description": "抢劫失败赔偿（美元，赔给被抢者）",
+            "type": "float",
+            "default": 1.0,
+            "hint": "失败时从抢劫者余额扣该美元金额、转入被抢者余额，按 quota_per_unit 换算成额度"
           },
           "cooldown_seconds": {
             "description": "抢劫冷却时间（秒）",
@@ -201,10 +201,10 @@
             "default": 300
           },
           "protect_balance": {
-            "description": "目标余额保护线（额度数值，1:1）",
-            "type": "int",
-            "default": 0,
-            "hint": "目标余额低于此数值时不可被抢；0 = 只要余额>0 就可被抢"
+            "description": "目标余额保护线（美元）",
+            "type": "float",
+            "default": 0.0,
+            "hint": "目标余额（美元）低于此值时不可被抢；0 = 只要余额>0 就可被抢"
           }
         }
       }
