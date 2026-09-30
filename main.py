@@ -2047,7 +2047,14 @@ class NewAPIPlugin(Star):
 
         try:
             html = self._build_rank_html(models, calls, quota, per, top_n)
-            url = await self.html_render(html, {})
+            width, height, _ = self._rank_render_size(models, calls, quota)
+            render_options = {
+                "full_page": False,
+                "clip": {"x": 0, "y": 0, "width": width, "height": height},
+                "animations": "disabled",
+                "scale": "css",
+            }
+            url = await self.html_render(html, {}, options=render_options)
             yield event.image_result(url)
         except Exception as e:
             logger.error(f"[newapi] 排行榜 HTML 渲染失败，回退文本: {e}")
@@ -2060,6 +2067,17 @@ class NewAPIPlugin(Star):
         except Exception:
             q = 0
         return f"{q / per:.2f}"
+
+    @staticmethod
+    def _rank_render_size(models, calls, quota):
+        """根据实际榜单数量与行数生成紧凑截图尺寸，避免 Chromium 默认视口留下空白。"""
+        groups = [rows for rows in (models, calls, quota) if rows]
+        section_count = max(1, len(groups))
+        max_rows = max((len(rows) for rows in groups), default=1)
+        widths = {1: 620, 2: 900, 3: 1180}
+        width = widths[min(section_count, 3)]
+        height = max(420, 304 + max_rows * 44)
+        return width, height, section_count
 
     def _build_rank_html(self, models, calls, quota, per, top_n) -> str:
         def esc(s):
@@ -2119,32 +2137,36 @@ class NewAPIPlugin(Star):
                              + "".join(rows) + '</div>')
 
         body = "".join(sections)
+        width, height, section_count = self._rank_render_size(models, calls, quota)
 
         css = '''<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><style>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>
+:root { --canvas-width:''' + str(width) + '''px; --canvas-height:''' + str(height) + '''px; }
 * { margin:0; padding:0; box-sizing:border-box; }
-body { width:680px; font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:linear-gradient(160deg,#eef2ff,#fdf2f8); padding:28px; color:#1f2937; }
-.wrap { background:#ffffff; border-radius:20px; padding:28px 24px; box-shadow:0 10px 40px rgba(0,0,0,.08); }
-.header { text-align:center; margin-bottom:6px; }
-.header .title { font-size:28px; font-weight:800; background:linear-gradient(90deg,#6366f1,#ec4899); -webkit-background-clip:text; background-clip:text; color:transparent; }
-.header .sub { font-size:13px; color:#9ca3af; margin-top:6px; }
-.section { margin-top:22px; }
-.stitle { font-size:16px; font-weight:700; color:#374151; padding-bottom:8px; border-bottom:2px solid #f3f4f6; margin-bottom:4px; }
-.row { display:flex; align-items:center; padding:8px 6px; border-bottom:1px dashed #f3f4f6; }
+html,body { width:var(--canvas-width); min-width:var(--canvas-width); height:var(--canvas-height); overflow:hidden; }
+body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; background:linear-gradient(150deg,#eef2ff 0%,#f8fafc 48%,#fdf2f8 100%); padding:24px; color:#1f2937; }
+.wrap { width:100%; height:100%; background:rgba(255,255,255,.96); border:1px solid rgba(99,102,241,.09); border-radius:20px; padding:24px; box-shadow:0 10px 36px rgba(76,81,135,.10); display:flex; flex-direction:column; }
+.header { text-align:left; display:flex; justify-content:space-between; align-items:flex-end; gap:20px; padding:2px 4px 18px; border-bottom:1px solid #eef0f7; }
+.header .title { font-size:27px; line-height:1.15; font-weight:800; letter-spacing:-.4px; background:linear-gradient(90deg,#4f46e5,#db2777); -webkit-background-clip:text; background-clip:text; color:transparent; white-space:nowrap; }
+.header .sub { font-size:12px; color:#9298a8; white-space:nowrap; padding-bottom:2px; }
+.grid { flex:1; min-height:0; display:grid; grid-template-columns:repeat(''' + str(section_count) + ''',minmax(0,1fr)); gap:16px; align-items:stretch; padding-top:18px; }
+.section { min-width:0; height:100%; background:#fafbff; border:1px solid #eceef8; border-radius:15px; padding:14px 14px 10px; overflow:hidden; }
+.stitle { font-size:16px; font-weight:750; color:#343847; padding:0 2px 11px; border-bottom:2px solid #eceef8; margin-bottom:4px; white-space:nowrap; }
+.row { min-height:44px; display:flex; align-items:center; padding:8px 2px; border-bottom:1px dashed #e8eaf3; }
 .row:last-child { border-bottom:none; }
-.rank { width:34px; }
-.badge { display:inline-flex; width:24px; height:24px; border-radius:7px; align-items:center; justify-content:center; font-size:13px; font-weight:700; color:#fff; background:#d1d5db; }
-.b1 { background:linear-gradient(135deg,#fbbf24,#f59e0b); }
+.rank { flex:0 0 34px; }
+.badge { display:inline-flex; width:25px; height:25px; border-radius:8px; align-items:center; justify-content:center; font-size:12px; font-weight:750; color:#fff; background:#d1d5db; }
+.b1 { background:linear-gradient(135deg,#fbbf24,#f59e0b); box-shadow:0 3px 8px rgba(245,158,11,.22); }
 .b2 { background:linear-gradient(135deg,#cbd5e1,#94a3b8); }
-.b3 { background:linear-gradient(135deg,#fcd34d,#d97706); }
-.bn { background:#e5e7eb; color:#6b7280; }
-.name { flex:1; font-size:15px; font-weight:600; color:#1f2937; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 8px; }
-.val { font-size:13px; font-weight:600; color:#6366f1; white-space:nowrap; }
-.footer { text-align:center; font-size:12px; color:#c4c4c4; margin-top:20px; }
+.b3 { background:linear-gradient(135deg,#f6bd72,#d97706); }
+.bn { background:#e6e8ef; color:#6b7280; }
+.name { flex:1; min-width:0; font-size:14px; font-weight:650; color:#232735; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:0 7px; }
+.val { flex:0 0 auto; font-size:12px; font-weight:700; color:#5b5fd7; white-space:nowrap; }
+.footer { text-align:center; font-size:11px; color:#a4a8b4; padding-top:12px; }
 </style></head><body><div class="wrap">
-<div class="header"><div class="title">📊 NewAPI 使用排行榜</div><div class="sub">LLM 模型热度 · 调用次数 · 额度消耗</div></div>'''
+<div class="header"><div class="title">📊 NewAPI 使用排行榜</div><div class="sub">LLM 模型热度 · 调用次数 · 额度消耗</div></div><div class="grid">'''
 
-        tail = '<div class="footer">数据来自站点数据库 · 统计前 ' + str(top_n) + ' 名</div></div></body></html>'
+        tail = '</div><div class="footer">数据来自站点数据库 · 统计前 ' + str(top_n) + ' 名</div></div></body></html>'
         return css + body + tail
 
     @staticmethod
