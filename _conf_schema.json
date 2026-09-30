@@ -53,6 +53,12 @@
     "default": false,
     "hint": "默认强制私聊绑定，防止密码泄露在群里"
   },
+  "private_direct_bind": {
+    "description": "私聊直接发「账号 密码」即绑定",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后，群友私聊机器人直接发送「账号 密码」（用空格分隔，无需 /绑定 或 /密码绑定 前缀）即可完成绑定；关闭则只能通过命令绑定"
+  },
   "bind_protect_admin": {
     "description": "保护管理员账号（role≥10）禁止通过 ID 绑定",
     "type": "bool",

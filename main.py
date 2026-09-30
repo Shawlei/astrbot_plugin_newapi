@@ -1701,24 +1701,20 @@ class NewAPIPlugin(Star):
             )
             return
 
-        # 记录待验证绑定，私聊收集账号密码
+        # 记录待验证绑定，等待绑定者主动私聊发送账号密码
         self.pending_binds[qq] = {
             "user_id": int(user_id),
             "username": user.get("username", ""),
             "expire": time.time() + 600,
             "tries": 3,
         }
-        sent = await self._send_private(event, qq,
-            f"🔐 你正在绑定 NewAPI 账号（ID:{user_id}，用户名：{user.get('username', '未知')}）\n"
-            f"请在 10 分钟内私聊回复：账号 密码（用空格分隔）\n"
-            f"例如：{user.get('username', '账号')} 你的密码\n"
-            f"验证通过即完成绑定，共 3 次尝试机会。发送 /取消绑定 可放弃"
+        uname = user.get("username", "未知")
+        yield event.plain_result(
+            f"🔐 正在绑定 NewAPI 账号（ID:{user_id}，用户名：{uname}）\n"
+            f"请私聊我发送：账号 密码（用空格分隔）完成绑定\n"
+            f"例如：{uname} 你的密码\n"
+            f"10 分钟内有效，共 3 次尝试机会；发送 /取消绑定 可放弃"
         )
-        if sent:
-            yield event.plain_result("✅ 已私聊你，请按私聊指引回复账号与密码完成绑定")
-        else:
-            del self.pending_binds[qq]
-            yield event.plain_result("私聊发送失败：请先添加我为好友，再重新使用 /绑定 <ID>")
 
     @filter.command("取消绑定", alias={"取消绑定ID"})
     async def cancel_bind(self, event: AstrMessageEvent):
@@ -1738,15 +1734,22 @@ class NewAPIPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
     async def on_private_bind_verify(self, event: AstrMessageEvent):
-        """私聊验证：处理待绑定用户发来的 账号 密码"""
+        """私聊处理：待绑定用户回复账号密码；或直接发「账号 密码」主动绑定"""
         try:
             qq = str(event.get_sender_id()).strip()
-            pending = self.pending_binds.get(qq)
-            if not pending:
-                return
             text = (event.message_str or "").strip()
             if not text or text.startswith("/"):
                 return  # 让其他命令正常处理
+
+            pending = self.pending_binds.get(qq)
+            if not pending:
+                # 无待验证流程：支持直接发「账号 密码」主动绑定
+                parts = text.split()
+                if self._cfg("private_direct_bind", True) and len(parts) == 2:
+                    async for r in self._bind_impl(event, parts[0], parts[1]):
+                        yield r
+                    return
+                return
 
             if time.time() > pending["expire"]:
                 del self.pending_binds[qq]
