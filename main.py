@@ -169,8 +169,9 @@ class MySQLQuota:
         )
 
     async def verify_user_password(self, username_or_id: str, password: str):
-        """数据库模式下的登录验证（站点密码为标准 bcrypt）
-        返回 (user, None) 或 (None, 错误类型)：user_not_found / wrong_password / error
+        """数据库模式下的登录验证（站点密码为标准 bcrypt，兼容常见变体）
+        返回 (user, None) 或 (None, 错误类型)：
+        user_not_found / no_password / bad_hash_format / wrong_password / error
         支持直接填用户 ID 数字"""
         user = await self.query_one(
             "SELECT id, username, password, role, status, quota, `group` FROM users "
@@ -187,15 +188,51 @@ class MySQLQuota:
             if self._cfg("debug_mode", False):
                 logger.warning(f"[newapi][DEBUG] 登录验证：用户不存在 -> {username_or_id!r}")
             return None, "user_not_found"
-        try:
-            import bcrypt
-            ok = bcrypt.checkpw(password.encode(), str(user["password"]).encode())
-        except Exception as e:
-            logger.error(f"[newapi] bcrypt 校验失败: {e}")
-            return None, "error"
+
+        raw_hash = str(user["password"] or "").strip()
         if self._cfg("debug_mode", False):
-            logger.info(f"[newapi][DEBUG] 登录验证: user={user['username']} 结果={ok} 哈希前缀={str(user['password'])[:7]}")
-        return (user, None) if ok else (None, "wrong_password")
+            logger.info(
+                f"[newapi][DEBUG] 登录验证: user={user['username']} "
+                f"哈希前缀={raw_hash[:7]!r} 哈希长度={len(raw_hash)}"
+            )
+        # OAuth（GitHub / LinuxDo / 微信等第三方登录）注册的账号，password 字段为空
+        if not raw_hash:
+            return None, "no_password"
+
+        import bcrypt
+        import hashlib
+        pwd = password.encode()
+        # $2y$ 与 $2b$ 语义相同（bcrypt 同源），归一化以兼容 PHP 生成的哈希
+        if raw_hash.startswith("$2y$"):
+            raw_hash = "$2b$" + raw_hash[4:]
+        # 标准 bcrypt：$2a$/$2b$/$2x$ 开头且长度恰为 60
+        if raw_hash.startswith("$2") and len(raw_hash) == 60:
+            try:
+                ok = bcrypt.checkpw(pwd, raw_hash.encode())
+            except (ValueError, TypeError) as e:
+                logger.error(f"[newapi] bcrypt 校验异常: {e}（哈希前缀={raw_hash[:7]!r}）")
+                return None, "bad_hash_format"
+            return (user, None) if ok else (None, "wrong_password")
+
+        # 非 bcrypt：站点为魔改分支时可能用单向哈希存密码，做精确比对兜底
+        digest_pool = {
+            hashlib.sha256(pwd).hexdigest(),
+            hashlib.sha256(pwd).hexdigest().upper(),
+            hashlib.sha256(hashlib.sha256(pwd).hexdigest().encode()).hexdigest(),
+            hashlib.sha256(hashlib.sha256(pwd).hexdigest().encode()).hexdigest().upper(),
+            hashlib.sha1(pwd).hexdigest(),
+            hashlib.sha1(pwd).hexdigest().upper(),
+            hashlib.md5(pwd).hexdigest(),
+            hashlib.md5(pwd).hexdigest().upper(),
+        }
+        if raw_hash in digest_pool:
+            return user, None
+
+        logger.error(
+            f"[newapi] 无法识别的密码哈希格式（前缀={raw_hash[:7]!r}，长度={len(raw_hash)}），"
+            f"该站点可能不是标准 new-api，或该账号密码字段异常"
+        )
+        return None, "bad_hash_format"
 
     async def create_user(self, username: str, password: str, group: str):
         """数据库模式注册：bcrypt 加密 + 插入 users 表，返回新用户 id"""
@@ -606,6 +643,26 @@ class NewAPIPlugin(Star):
             return None
         return self.dbq
 
+    async def _api_login_confirm(self, username: str, password: str):
+        """通过站点登录接口验证账号密码并确认身份。
+        返回 (login_id, login_username, login_group, errmsg)；errmsg 为 None 表示成功。
+        当站点密码哈希无法在本地识别（bad_hash_format）时，回退到此接口兜底。"""
+        status, data = await self.client.login(username, password)
+        if not (data.get("success") and data.get("data")):
+            return None, None, None, data.get("message", "验证失败")
+        login_user = data["data"] if isinstance(data.get("data"), dict) else {}
+        login_id = login_user.get("id")
+        if login_id is None:
+            # 部分版本登录响应不返回 id，用管理员权限按用户名反查确认身份
+            status, data = await self.client.search_user(username)
+            for u in _extract_user_list(data):
+                if str(u.get("username", "")).lower() == username.lower():
+                    login_id = u.get("id")
+                    break
+        if login_id is None:
+            return None, None, None, "__no_id__"
+        return login_id, login_user.get("username") or username, login_user.get("group"), None
+
     def _is_group(self, event: AstrMessageEvent) -> bool:
         gid = event.get_group_id()
         return bool(gid)
@@ -726,6 +783,20 @@ class NewAPIPlugin(Star):
             if user is None:
                 if err == "user_not_found":
                     yield event.plain_result("绑定失败：账号不存在（注意填的是账号名，不是数字 ID）")
+                elif err == "no_password":
+                    yield event.plain_result("绑定失败：该账号未设置密码（可能通过第三方登录注册），请先在网站「个人设置」里设置密码后再绑定")
+                elif err == "bad_hash_format":
+                    # 站点密码哈希无法本地识别，回退到站点登录接口验证
+                    if not password:
+                        yield event.plain_result("请提供密码：/密码绑定 <用户名> <密码>（建议私聊）")
+                        return
+                    uid, _u, _g, emsg = await self._api_login_confirm(username, password)
+                    if emsg == "__no_id__":
+                        yield event.plain_result("绑定失败：无法确认该账号的身份（用户ID查询失败），请稍后再试")
+                        return
+                    if emsg:
+                        yield event.plain_result(f"绑定失败：用户名或密码错误（{emsg}）")
+                        return
                 elif err == "error":
                     yield event.plain_result("绑定失败：校验服务异常，请稍后再试")
                 else:
@@ -1386,30 +1457,54 @@ class NewAPIPlugin(Star):
 
             db = await self._db()
             if db is not None:
-                # 数据库模式：bcrypt 校验
+                # 数据库模式：本地校验（bcrypt 或常见变体）
                 vuser, verr = await db.verify_user_password(username, password)
                 if not vuser:
-                    pending["tries"] -= 1
-                    if verr == "user_not_found":
-                        reason = "账号不存在（注意填的是账号名，不是数字 ID）"
-                    elif verr == "error":
-                        reason = "校验服务异常"
+                    if verr == "bad_hash_format":
+                        # 站点密码哈希无法本地识别，回退到站点登录接口验证
+                        lid, luname, lgroup, emsg = await self._api_login_confirm(username, password)
+                        if emsg is not None:
+                            pending["tries"] -= 1
+                            reason = "账号或密码错误"
+                            if pending["tries"] <= 0:
+                                del self.pending_binds[qq]
+                                yield event.plain_result(f"{reason}，尝试次数已用完，绑定已取消，请回群重新发起")
+                            else:
+                                yield event.plain_result(
+                                    f"{reason}，还剩 {pending['tries']} 次机会，请重新回复：账号 密码"
+                                )
+                            return
+                        login_id, login_username, login_group = lid, luname, lgroup
                     else:
-                        reason = "账号或密码错误"
-                    if pending["tries"] <= 0:
-                        del self.pending_binds[qq]
-                        yield event.plain_result(f"{reason}，尝试次数已用完，绑定已取消，请回群重新发起")
-                    else:
-                        yield event.plain_result(
-                            f"{reason}，还剩 {pending['tries']} 次机会，请重新回复：账号 密码"
-                        )
-                    return
-                login_id = vuser["id"]
-                login_username = vuser["username"]
-                login_group = vuser.get("group")
+                        pending["tries"] -= 1
+                        if verr == "user_not_found":
+                            reason = "账号不存在（注意填的是账号名，不是数字 ID）"
+                        elif verr == "no_password":
+                            reason = "该账号未设置密码（可能通过第三方登录注册），请先在网站「个人设置」里设置密码后再绑定"
+                        elif verr == "error":
+                            reason = "校验服务异常"
+                        else:
+                            reason = "账号或密码错误"
+                        if pending["tries"] <= 0:
+                            del self.pending_binds[qq]
+                            yield event.plain_result(f"{reason}，尝试次数已用完，绑定已取消，请回群重新发起")
+                        else:
+                            yield event.plain_result(
+                                f"{reason}，还剩 {pending['tries']} 次机会，请重新回复：账号 密码"
+                            )
+                        return
+                else:
+                    login_id = vuser["id"]
+                    login_username = vuser["username"]
+                    login_group = vuser.get("group")
             else:
-                status, data = await self.client.login(username, password)
-                if not (data.get("success") and data.get("data")):
+                login_id, login_username, login_group, emsg = await self._api_login_confirm(username, password)
+                if emsg == "__no_id__":
+                    yield event.plain_result(
+                        "绑定失败：无法确认该账号的身份（用户ID查询失败），请稍后再试"
+                    )
+                    return
+                if emsg is not None:
                     pending["tries"] -= 1
                     if pending["tries"] <= 0:
                         del self.pending_binds[qq]
@@ -1419,24 +1514,6 @@ class NewAPIPlugin(Star):
                             f"账号或密码错误，还剩 {pending['tries']} 次机会，请重新回复：账号 密码"
                         )
                     return
-
-                login_user = data["data"] if isinstance(data.get("data"), dict) else {}
-
-                # 部分版本登录响应不返回 id，用管理员权限按用户名反查确认身份
-                login_id = login_user.get("id")
-                if login_id is None:
-                    status, data = await self.client.search_user(username)
-                    for u in _extract_user_list(data):
-                        if str(u.get("username", "")).lower() == username.lower():
-                            login_id = u.get("id")
-                            break
-                if login_id is None:
-                    yield event.plain_result(
-                        "绑定失败：无法确认该账号的身份（用户ID查询失败），请稍后再试"
-                    )
-                    return
-                login_username = login_user.get("username") or username
-                login_group = login_user.get("group")
 
             if str(login_id) != str(pending["user_id"]):
                 yield event.plain_result(
