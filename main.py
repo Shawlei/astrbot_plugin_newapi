@@ -320,7 +320,8 @@ class MySQLQuota:
             return None
 
     async def search_users(self, keyword: str, limit: int = 10):
-        sql = ("SELECT id, username, quota, `group` FROM users WHERE deleted_at IS NULL AND "
+        sql = ("SELECT id, username, display_name, quota, `group` FROM users "
+               "WHERE deleted_at IS NULL AND "
                "(username LIKE %s OR display_name LIKE %s")
         args = [f"%{keyword}%", f"%{keyword}%"]
         if str(keyword).isdigit():
@@ -768,6 +769,18 @@ class NewAPIPlugin(Star):
         if not wl:
             return True
         return str(event.get_group_id()) in wl
+
+    def _is_admin(self, event: AstrMessageEvent) -> bool:
+        """管理员判断：AstrBot 框架管理员（admins_id）或插件配置的 admin_qqs 列表"""
+        try:
+            if event.is_admin():
+                return True
+        except Exception:
+            pass
+        qq = str(event.get_sender_id()).strip()
+        admins = [str(a).strip() for a in (self._cfg("admin_qqs", []) or [])
+                  if str(a).strip()]
+        return qq in admins
 
     @staticmethod
     def _is_aiocqhttp(event: AstrMessageEvent) -> bool:
@@ -1858,7 +1871,6 @@ class NewAPIPlugin(Star):
             logger.error(f"[newapi] 私聊绑定验证出错:\n{traceback.format_exc()}")
 
     # ---------- 管理员命令 ----------
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("查用户", alias={"newapi用户", "newapi查用户"})
     async def admin_search(self, event: AstrMessageEvent, keyword: str = ""):
         if not self._cfg("slash_enabled", True):
@@ -1866,30 +1878,61 @@ class NewAPIPlugin(Star):
         if not self._group_allowed(event):
             return
         """管理员：搜索 NewAPI 用户信息"""
+        async for r in self._admin_search_impl(event, keyword):
+            yield r
+
+    async def _admin_search_impl(self, event: AstrMessageEvent, keyword: str = ""):
+        if not self._is_admin(event):
+            yield event.plain_result("无权限：仅管理员可用（可在插件配置 admin_qqs 里添加管理员 QQ）")
+            return
+        keyword = (keyword or "").strip()
         if not keyword:
-            yield event.plain_result("用法：/查用户 <用户名或关键词>")
+            yield event.plain_result("用法：/查用户 <用户名 / 数字ID / QQ号>")
             return
+
         db = await self._db()
-        if db is not None:
-            users = await db.search_users(keyword)
-        else:
-            status, data = await self.client.search_user(keyword)
-            users = _extract_user_list(data)
+        users = []
+
+        # 1) 优先按 QQ 号精确查绑定关系（群友常用 QQ 号查自己/他人账号）
+        rec = await self.store.get(keyword)
+        if rec and rec.get("user_id") is not None:
+            uid = rec.get("user_id")
+            if db is not None:
+                u = await db.get_user(uid)
+            else:
+                status, data = await self.client.get_user(uid)
+                u = data.get("data") if isinstance(data.get("data"), dict) else None
+            if u:
+                users = [u]
+
+        # 2) 否则按 username / display_name / 数字ID 模糊搜索
         if not users:
-            yield event.plain_result("未找到相关用户")
+            if db is not None:
+                users = await db.search_users(keyword)
+            else:
+                status, data = await self.client.search_user(keyword)
+                users = _extract_user_list(data)
+
+        if not users:
+            yield event.plain_result(f"未找到与「{keyword}」相关的用户（支持用户名 / 数字ID / 已绑定QQ号）")
             return
+
         lines = []
         per = int(self._cfg("quota_per_unit", 500000) or 500000)
         for u in users[:10]:
             qq = await self.store.find_by_user_id(u.get("id"))
+            disp = str(u.get("display_name") or "").strip()
+            name = u.get("username") or ""
+            label = name
+            if disp and disp != name:
+                label = f"{name}（{disp}）"
             lines.append(
-                f"· {u.get('username')} (ID:{u.get('id')}) "
+                f"· {label} (ID:{u.get('id')}) "
                 f"余额:${int(u.get('quota') or 0)/per:.4f}"
                 + (f" | 已绑定QQ:{qq}" if qq else "")
             )
         yield event.plain_result("\n".join(lines))
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("强制解绑", alias={"newapi强制解绑"})
     async def admin_unbind(self, event: AstrMessageEvent, qq: str = ""):
         if not self._cfg("slash_enabled", True):
@@ -1897,6 +1940,13 @@ class NewAPIPlugin(Star):
         if not self._group_allowed(event):
             return
         """管理员：强制解除某个 QQ 的绑定"""
+        async for r in self._admin_unbind_impl(event, qq):
+            yield r
+
+    async def _admin_unbind_impl(self, event: AstrMessageEvent, qq: str = ""):
+        if not self._is_admin(event):
+            yield event.plain_result("无权限：仅管理员可用（可在插件配置 admin_qqs 里添加管理员 QQ）")
+            return
         if not qq:
             yield event.plain_result("用法：/强制解绑 <QQ号>")
             return
@@ -1929,8 +1979,8 @@ class NewAPIPlugin(Star):
             "/抢劫 @某人 - 抢劫群友余额（真实扣款/入账，需开启抢劫玩法）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
             "/帮助 - 本命令列表\n"
-            "管理员：/查用户 <关键词>、/强制解绑 <QQ号>\n"
-            "自定义前缀（如已配置 %）：%签到、%注册、%找回密码 等价于对应命令"
+            "管理员：/查用户 <用户名/数字ID/QQ号>、/强制解绑 <QQ号>\n"
+            "自定义前缀（如已配置 %）：%签到、%注册、%找回密码、%查用户 等价于对应命令"
         )
 
     # ---------- 自定义指令前缀（绕过 LLM） ----------
@@ -1966,6 +2016,8 @@ class NewAPIPlugin(Star):
                     "发红包": (self._send_hongbao_impl, 2),
                     "抢红包": (self._grab_hongbao_impl, 0),
                     "抢劫": (self._rob_impl, 1),
+                    "查用户": (self._admin_search_impl, 1),
+                    "强制解绑": (self._admin_unbind_impl, 1),
                     "帮助": (self._help_impl, 0),
                 }
                 if cmd not in handlers:
@@ -1974,7 +2026,7 @@ class NewAPIPlugin(Star):
                 if len(args) < nargs:
                     yield event.plain_result(f"参数不足：{p}{cmd} 后面还需要 {nargs} 个参数")
                 else:
-                    async for r in fn(event, *args):
+                    async for r in fn(event, *args[:nargs]):
                         yield r
                 event.stop_event()  # 拦截，避免进入 LLM
                 return

@@ -241,6 +241,12 @@
     "default": [],
     "hint": "填群号后，插件只在白名单内的群聊响应命令并处理退群，其他群完全静默；留空则不限制。私聊不受白名单影响"
   },
+  "admin_qqs": {
+    "description": "管理员 QQ 号列表",
+    "type": "list",
+    "default": [],
+    "hint": "填 QQ 号后，这些 QQ 可使用 /查用户、/强制解绑 等管理员命令（无需在 AstrBot 里额外配置管理员）；留空则仅 AstrBot 框架内的管理员可用"
+  },
   "watch_groups": {
     "description": "监听退群的群号列表（留空 = 监听所有群）",
     "type": "list",
