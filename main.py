@@ -168,18 +168,34 @@ class MySQLQuota:
             (username,),
         )
 
-    async def verify_user_password(self, username: str, password: str):
-        """数据库模式下的登录验证（站点密码为标准 bcrypt）"""
-        user = await self.get_user_by_username(username)
-        if not user:
-            return None
+    async def verify_user_password(self, username_or_id: str, password: str):
+        """数据库模式下的登录验证（站点密码为标准 bcrypt）
+        返回 (user, None) 或 (None, 错误类型)：user_not_found / wrong_password / error
+        支持直接填用户 ID 数字"""
+        user = await self.query_one(
+            "SELECT id, username, password, role, status, quota, `group` FROM users "
+            "WHERE username=%s AND deleted_at IS NULL LIMIT 1",
+            (username_or_id,),
+        )
+        if user is None and str(username_or_id).isdigit():
+            user = await self.query_one(
+                "SELECT id, username, password, role, status, quota, `group` FROM users "
+                "WHERE id=%s AND deleted_at IS NULL LIMIT 1",
+                (int(username_or_id),),
+            )
+        if user is None:
+            if self._cfg("debug_mode", False):
+                logger.warning(f"[newapi][DEBUG] 登录验证：用户不存在 -> {username_or_id!r}")
+            return None, "user_not_found"
         try:
             import bcrypt
-            if bcrypt.checkpw(password.encode(), str(user["password"]).encode()):
-                return user
+            ok = bcrypt.checkpw(password.encode(), str(user["password"]).encode())
         except Exception as e:
             logger.error(f"[newapi] bcrypt 校验失败: {e}")
-        return None
+            return None, "error"
+        if self._cfg("debug_mode", False):
+            logger.info(f"[newapi][DEBUG] 登录验证: user={user['username']} 结果={ok} 哈希前缀={str(user['password'])[:7]}")
+        return (user, None) if ok else (None, "wrong_password")
 
     async def create_user(self, username: str, password: str, group: str):
         """数据库模式注册：bcrypt 加密 + 插入 users 表，返回新用户 id"""
@@ -703,10 +719,17 @@ class NewAPIPlugin(Star):
         db = await self._db()
         if db is not None:
             # 数据库模式：bcrypt 直接校验 / 按用户名查询
-            user = (await db.verify_user_password(username, password)) if verify \
-                else await db.get_user_by_username(username)
-            if not user:
-                yield event.plain_result("绑定失败：用户名或密码错误（或用户不存在）")
+            if verify:
+                user, err = await db.verify_user_password(username, password)
+            else:
+                user, err = await db.get_user_by_username(username), None
+            if user is None:
+                if err == "user_not_found":
+                    yield event.plain_result("绑定失败：账号不存在（注意填的是账号名，不是数字 ID）")
+                elif err == "error":
+                    yield event.plain_result("绑定失败：校验服务异常，请稍后再试")
+                else:
+                    yield event.plain_result("绑定失败：用户名或密码错误")
                 return
             uid = user["id"]
         elif verify:
@@ -1364,15 +1387,21 @@ class NewAPIPlugin(Star):
             db = await self._db()
             if db is not None:
                 # 数据库模式：bcrypt 校验
-                vuser = await db.verify_user_password(username, password)
+                vuser, verr = await db.verify_user_password(username, password)
                 if not vuser:
                     pending["tries"] -= 1
+                    if verr == "user_not_found":
+                        reason = "账号不存在（注意填的是账号名，不是数字 ID）"
+                    elif verr == "error":
+                        reason = "校验服务异常"
+                    else:
+                        reason = "账号或密码错误"
                     if pending["tries"] <= 0:
                         del self.pending_binds[qq]
-                        yield event.plain_result("账号或密码错误次数过多，绑定已取消，请回群重新发起")
+                        yield event.plain_result(f"{reason}，尝试次数已用完，绑定已取消，请回群重新发起")
                     else:
                         yield event.plain_result(
-                            f"账号或密码错误，还剩 {pending['tries']} 次机会，请重新回复：账号 密码"
+                            f"{reason}，还剩 {pending['tries']} 次机会，请重新回复：账号 密码"
                         )
                     return
                 login_id = vuser["id"]
