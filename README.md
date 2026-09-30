@@ -243,6 +243,7 @@ exit;
 | --- | --- | --- |
 | `debug_mode` | `false` | 调试模式：跳过冷却/已绑定检查，日志输出全部请求详情 |
 | `custom_command_prefixes` | `[]` | 自定义指令前缀（如 `%`、`*`） |
+| `whitelist_groups` | `[]` | 群聊白名单：仅这些群号内插件生效（留空=所有群生效，私聊不受限） |
 | `watch_groups` | `[]` | 监听退群的群号列表（留空=所有群） |
 | `delete_on_leave` | `false` | 退群后删除站点账号（软删除） |
 

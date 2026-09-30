@@ -759,6 +759,16 @@ class NewAPIPlugin(Star):
         gid = event.get_group_id()
         return bool(gid)
 
+    def _group_allowed(self, event: AstrMessageEvent) -> bool:
+        """群聊白名单：白名单为空=所有群放行；非空=仅白名单内群号放行；私聊不受限"""
+        if not self._is_group(event):
+            return True
+        wl = [str(g).strip() for g in (self._cfg("whitelist_groups", []) or [])
+              if str(g).strip()]
+        if not wl:
+            return True
+        return str(event.get_group_id()) in wl
+
     @staticmethod
     def _is_aiocqhttp(event: AstrMessageEvent) -> bool:
         try:
@@ -838,6 +848,8 @@ class NewAPIPlugin(Star):
     @filter.command("密码绑定", alias={"newapi绑定", "绑定newapi", "绑定账号"})
     async def bind(self, event: AstrMessageEvent, username: str = "", password: str = ""):
         if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
             return
         """绑定 NewAPI 账号：/密码绑定 用户名 密码（强烈建议私聊使用）"""
         async for r in self._bind_impl(event, username, password):
@@ -932,6 +944,8 @@ class NewAPIPlugin(Star):
     async def unbind(self, event: AstrMessageEvent, target_qq: str = ""):
         if not self._cfg("slash_enabled", True):
             return
+        if not self._group_allowed(event):
+            return
         """解绑：/解绑"""
         async for r in self._unbind_impl(event, target_qq):
             yield r
@@ -952,6 +966,8 @@ class NewAPIPlugin(Star):
     @filter.command("签到", alias={"打卡"})
     async def checkin(self, event: AstrMessageEvent):
         if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
             return
         """每日签到，随机额度"""
         async for r in self._checkin_impl(event):
@@ -1043,6 +1059,8 @@ class NewAPIPlugin(Star):
     async def balance(self, event: AstrMessageEvent):
         if not self._cfg("slash_enabled", True):
             return
+        if not self._group_allowed(event):
+            return
         """查询绑定的 NewAPI 账号余额"""
         async for r in self._balance_impl(event):
             yield r
@@ -1097,6 +1115,8 @@ class NewAPIPlugin(Star):
     @filter.command("发红包", alias={"拼手气红包"})
     async def send_hongbao(self, event: AstrMessageEvent, count_str: str = "", amount_str: str = ""):
         if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
             return
         """发拼手气红包：/发红包 10个 1.5余额（总金额按美元额度计，真实扣款）"""
         async for r in self._send_hongbao_impl(event, count_str, amount_str):
@@ -1179,6 +1199,8 @@ class NewAPIPlugin(Star):
     async def grab_hongbao(self, event: AstrMessageEvent):
         if not self._cfg("slash_enabled", True):
             return
+        if not self._group_allowed(event):
+            return
         """抢本群未抢完的拼手气红包，金额真实入账"""
         async for r in self._grab_hongbao_impl(event):
             yield r
@@ -1249,6 +1271,8 @@ class NewAPIPlugin(Star):
     @filter.command("抢劫", alias={"打劫", "抢钱"})
     async def rob(self, event: AstrMessageEvent, target: str = ""):
         if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
             return
         """抢劫群友的 NewAPI 余额：/抢劫 @某人 或 /抢劫 <QQ号/用户名>，成功/失败均真实扣款入账"""
         async for r in self._rob_impl(event, target):
@@ -1414,6 +1438,8 @@ class NewAPIPlugin(Star):
     @filter.command("注册")
     async def register(self, event: AstrMessageEvent):
         if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
             return
         """群内自助注册：以 QQ 号为用户名，随机 8 位密码私聊发送"""
         async for r in self._register_impl(event):
@@ -1616,6 +1642,8 @@ class NewAPIPlugin(Star):
     async def bind_id(self, event: AstrMessageEvent, user_id: str = ""):
         if not self._cfg("slash_enabled", True):
             return
+        if not self._group_allowed(event):
+            return
         """发起 ID 绑定：/绑定 1，随后私聊输入账号与密码完成验证"""
         async for r in self._bind_id_impl(event, user_id):
             yield r
@@ -1678,6 +1706,8 @@ class NewAPIPlugin(Star):
     @filter.command("取消绑定", alias={"取消绑定ID"})
     async def cancel_bind(self, event: AstrMessageEvent):
         if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
             return
         async for r in self._cancel_bind_impl(event):
             yield r
@@ -1821,6 +1851,8 @@ class NewAPIPlugin(Star):
     async def admin_search(self, event: AstrMessageEvent, keyword: str = ""):
         if not self._cfg("slash_enabled", True):
             return
+        if not self._group_allowed(event):
+            return
         """管理员：搜索 NewAPI 用户信息"""
         if not keyword:
             yield event.plain_result("用法：/查用户 <用户名或关键词>")
@@ -1850,6 +1882,8 @@ class NewAPIPlugin(Star):
     async def admin_unbind(self, event: AstrMessageEvent, qq: str = ""):
         if not self._cfg("slash_enabled", True):
             return
+        if not self._group_allowed(event):
+            return
         """管理员：强制解除某个 QQ 的绑定"""
         if not qq:
             yield event.plain_result("用法：/强制解绑 <QQ号>")
@@ -1862,6 +1896,8 @@ class NewAPIPlugin(Star):
     @filter.command("帮助", alias={"newapi帮助", "newapi菜单"})
     async def help_cmd(self, event: AstrMessageEvent):
         if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
             return
         async for r in self._help_impl(event):
             yield r
@@ -1887,6 +1923,8 @@ class NewAPIPlugin(Star):
     async def on_custom_command(self, event: AstrMessageEvent):
         """自定义前缀调度：如 %签到、*注册；处理完成后拦截事件，不进入 LLM"""
         try:
+            if not self._group_allowed(event):
+                return
             prefixes = [str(p).strip() for p in (self._cfg("custom_command_prefixes", []) or [])
                         if str(p).strip()]
             if not prefixes:
@@ -1945,6 +1983,11 @@ class NewAPIPlugin(Star):
             watch = [str(g) for g in (self._cfg("watch_groups", []) or [])]
             group_id = str(raw.get("group_id", ""))
             if watch and group_id not in watch:
+                return
+            # 群聊白名单：非空时仅处理白名单内群聊的退群事件
+            wl = [str(g).strip() for g in (self._cfg("whitelist_groups", []) or [])
+                  if str(g).strip()]
+            if wl and group_id not in wl:
                 return
 
             leave_qq = str(raw.get("user_id", ""))
