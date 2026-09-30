@@ -1104,6 +1104,7 @@ class NewAPIPlugin(Star):
             return
         yield event.plain_result(
             f"👤 账号：{rec.get('username')}\n"
+            f"🆔 用户 ID：{rec.get('user_id')}\n"
             f"🔑 密码：{pwd}\n"
             f"🌐 登录：{self.client.base_url}"
         )
@@ -1554,6 +1555,7 @@ class NewAPIPlugin(Star):
             sent = await self._send_private(event, qq,
                 f"🎉 {title}\n"
                 f"👤 账号：{username}\n"
+                f"🆔 用户 ID：{uid}\n"
                 f"🔑 密码：{password}\n"
                 f"👥 分组：{reg_group}\n"
                 f"🌐 登录：{self.client.base_url}\n"
@@ -1627,6 +1629,7 @@ class NewAPIPlugin(Star):
         sent = await self._send_private(event, qq,
             f"🎉 {title}\n"
             f"👤 账号：{username}\n"
+            f"🆔 用户 ID：{uid}\n"
             f"🔑 密码：{password}\n"
             f"👥 分组：{reg_group}\n"
             f"🌐 登录：{base}\n"
