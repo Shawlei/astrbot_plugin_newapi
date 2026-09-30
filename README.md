@@ -232,10 +232,10 @@ exit;
 | `db.hongbao_expire_hours` | `24` | 红包过期时间（过期自动退回发起者） |
 | `db.rob_enabled` | `false` | 🔪 抢劫玩法开关（开启后展开下方「抢劫设置」） |
 | `db.rob.success_rate` | `0.5` | 抢劫成功率（0~1） |
-| `db.rob.amount_min_usd` / `amount_max_usd` | `0.05` / `0.5` | 单次抢到金额范围（美元，自动换算为额度） |
-| `db.rob.penalty_usd` | `0.1` | 抢劫失败赔偿（美元，赔给被抢者） |
+| `db.rob.amount_min` / `amount_max` | `1000` / `10000` | 单次抢到金额范围（额度数值，1:1 直接扣除） |
+| `db.rob.penalty` | `1000` | 抢劫失败赔偿（额度数值，1:1，赔给被抢者） |
 | `db.rob.cooldown_seconds` | `300` | 抢劫冷却时间（秒） |
-| `db.rob.protect_balance_usd` | `0` | 目标余额保护线（美元，低于此值不可被抢） |
+| `db.rob.protect_balance` | `0` | 目标余额保护线（额度数值，1:1，低于此值不可被抢） |
 
 ### 其他
 
