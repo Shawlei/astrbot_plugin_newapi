@@ -1886,8 +1886,17 @@ class NewAPIPlugin(Star):
             yield event.plain_result("无权限：仅管理员可用（可在插件配置 admin_qqs 里添加管理员 QQ）")
             return
         keyword = (keyword or "").strip()
+        # 0) 优先解析 @ 目标：直接把被 @ 的群友映射为其 QQ 号查询
+        at_qqs = _extract_at_qqs(event)
+        if at_qqs:
+            keyword = at_qqs[0]
+        elif keyword.startswith("@"):
+            yield event.plain_result(
+                "未识别到 @ 目标：请点选群友头像进行真实 @（或直接输入其 QQ 号 / 用户名）"
+            )
+            return
         if not keyword:
-            yield event.plain_result("用法：/查用户 <用户名 / 数字ID / QQ号>")
+            yield event.plain_result("用法：/查用户 <用户名 / 数字ID / QQ号 / @某人>")
             return
 
         db = await self._db()
@@ -1914,7 +1923,9 @@ class NewAPIPlugin(Star):
                 users = _extract_user_list(data)
 
         if not users:
-            yield event.plain_result(f"未找到与「{keyword}」相关的用户（支持用户名 / 数字ID / 已绑定QQ号）")
+            yield event.plain_result(
+                f"未找到与「{keyword}」相关的用户（支持用户名 / 数字ID / 已绑定QQ号 / @某人）"
+            )
             return
 
         lines = []
@@ -1979,7 +1990,7 @@ class NewAPIPlugin(Star):
             "/抢劫 @某人 - 抢劫群友余额（真实扣款/入账，需开启抢劫玩法）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
             "/帮助 - 本命令列表\n"
-            "管理员：/查用户 <用户名/数字ID/QQ号>、/强制解绑 <QQ号>\n"
+            "管理员：/查用户 <用户名/数字ID/QQ号/@某人>、/强制解绑 <QQ号>\n"
             "自定义前缀（如已配置 %）：%签到、%注册、%找回密码、%查用户 等价于对应命令"
         )
 
