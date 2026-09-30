@@ -204,6 +204,8 @@ exit;
 | --- | --- | --- |
 | `bind_verify_password` | `true` | 密码绑定是否验证账号密码 |
 | `allow_group_bind` | `false` | 允许群聊中密码绑定 |
+| `recall_when_private_fail` | `true` | 私聊发不出时（对方非好友），改为群发并自动撤回 |
+| `recall_delay_seconds` | `10` | 群发撤回延迟秒数 |
 | `bind_protect_admin` | `true` | 禁止 ID 绑定管理员账号 |
 | `bind_group` | 空 | `/绑定 <ID>` 成功后自动更换的分组 |
 | `register_enabled` | `true` | 开启群内自助注册 |

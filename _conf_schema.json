@@ -36,6 +36,17 @@
     "default": true,
     "hint": "关闭后仅需用户名即可绑定（凭管理员搜索精确匹配），安全性较低"
   },
+  "recall_when_private_fail": {
+    "description": "私聊发送失败时改为群发+自动撤回",
+    "type": "bool",
+    "default": true,
+    "hint": "QQ 给非好友发私聊常会失败；开启后注册密码等私聊内容将发到群里并在数秒后自动撤回，避免用户收不到"
+  },
+  "recall_delay_seconds": {
+    "description": "群发撤回延迟（秒）",
+    "type": "int",
+    "default": 10
+  },
   "allow_group_bind": {
     "description": "是否允许在群聊中绑定",
     "type": "bool",

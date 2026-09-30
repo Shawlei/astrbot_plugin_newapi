@@ -646,6 +646,29 @@ class NewAPIPlugin(Star):
             logger.error(f"[newapi] 私聊发送失败: {e}")
         return False
 
+    async def _send_group_recall(self, event: AstrMessageEvent, text: str, delay: int) -> bool:
+        """私聊失败时的兜底：发到群里，delay 秒后自动撤回"""
+        if not self._is_aiocqhttp(event) or not self._is_group(event):
+            return False
+        try:
+            result = await event.bot.api.call_action(
+                "send_group_msg", group_id=int(event.get_group_id()), message=text
+            )
+            mid = result.get("message_id") if isinstance(result, dict) else None
+            if mid is None:
+                return False
+            async def _del():
+                await asyncio.sleep(delay)
+                try:
+                    await event.bot.api.call_action("delete_msg", message_id=mid)
+                except Exception:
+                    pass
+            asyncio.ensure_future(_del())
+            return True
+        except Exception as e:
+            logger.error(f"[newapi] 群发撤回兜底失败: {e}")
+            return False
+
     # ---------- 绑定 ----------
     @filter.command("密码绑定", alias={"newapi绑定", "绑定newapi", "绑定账号"})
     async def bind(self, event: AstrMessageEvent, username: str = "", password: str = ""):
@@ -1134,6 +1157,18 @@ class NewAPIPlugin(Star):
             )
             if sent:
                 yield event.plain_result("✅ 注册成功！账号密码已私聊发送给你，请查收～")
+            elif self._cfg("recall_when_private_fail", True) and self._is_group(event):
+                delay = int(self._cfg("recall_delay_seconds", 10) or 10)
+                if await self._send_group_recall(event,
+                    f"🎉 {title}\n👤 账号：{username}\n🔑 密码：{password}\n"
+                    f"👥 分组：{reg_group}\n🌐 登录：{self.client.base_url}\n"
+                    f"⚠️ 本条 {delay} 秒后自动撤回，请立即保存！",
+                    delay):
+                    yield event.plain_result(
+                        f"✅ 注册成功！账号密码已发到群里，{delay} 秒后自动撤回，请立即保存"
+                    )
+                    return
+                yield event.plain_result("注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理")
             else:
                 yield event.plain_result("注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理")
             return
@@ -1208,6 +1243,18 @@ class NewAPIPlugin(Star):
                 "✅ 注册成功！账号密码已私聊发送给你，请查收～"
                 + ("" if group_ok else "\n⚠️ 默认分组设置失败，请联系管理员")
             )
+        elif self._cfg("recall_when_private_fail", True) and self._is_group(event):
+            delay = int(self._cfg("recall_delay_seconds", 10) or 10)
+            if await self._send_group_recall(event,
+                f"🎉 注册成功！\n👤 账号：{username}\n🔑 密码：{password}\n"
+                f"👥 分组：{reg_group}\n🌐 登录：{base}\n"
+                f"⚠️ 本条 {delay} 秒后自动撤回，请立即保存！",
+                delay):
+                yield event.plain_result(
+                    f"✅ 注册成功！账号密码已发到群里，{delay} 秒后自动撤回，请立即保存"
+                )
+            else:
+                yield event.plain_result("注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理")
         else:
             yield event.plain_result(
                 "注册成功，但私聊发送失败：请先添加我为好友，然后联系管理员处理"
