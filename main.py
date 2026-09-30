@@ -478,6 +478,31 @@ def _extract_user_list(data) -> list:
     return []
 
 
+def _extract_at_qqs(event) -> list:
+    """从原始事件中提取被 @ 的 QQ 号列表（兼容 OneBot array / CQ 码字符串两种形态），去重保序"""
+    import re
+    qqs = []
+    raw = getattr(getattr(event, "message_obj", None), "raw_event", None)
+    if isinstance(raw, dict):
+        msg = raw.get("message")
+        if isinstance(msg, list):
+            for seg in msg:
+                if isinstance(seg, dict) and seg.get("type") == "at":
+                    q = (seg.get("data") or {}).get("qq")
+                    if q:
+                        qqs.append(str(q))
+        elif isinstance(msg, str):
+            qqs += re.findall(r"\[CQ:at,qq=(\d+)\]", msg)
+    text = getattr(event, "message_str", "") or ""
+    qqs += re.findall(r"\[CQ:at,qq=(\d+)\]", text)
+    seen, out = set(), []
+    for q in qqs:
+        if q and q not in seen:
+            seen.add(q)
+            out.append(q)
+    return out
+
+
 # ============================================================
 # NewAPI 客户端（超级管理员令牌）
 # ============================================================
@@ -1205,6 +1230,170 @@ class NewAPIPlugin(Star):
             reply += f"\n红包已被抢完啦～（共 {target['count']} 个）"
         yield event.plain_result(reply)
 
+    # ---------- 抢劫玩法 ----------
+    @filter.command("抢劫", alias={"打劫", "抢钱"})
+    async def rob(self, event: AstrMessageEvent, target: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
+        """抢劫群友的 NewAPI 余额：/抢劫 @某人 或 /抢劫 <QQ号/用户名>，成功/失败均真实扣款入账"""
+        async for r in self._rob_impl(event, target):
+            yield r
+
+    async def _resolve_target_qq(self, event: AstrMessageEvent, arg: str):
+        """解析抢劫目标 QQ：优先 @，其次纯数字 QQ 号，再次 NewAPI 用户名；返回 (qq, errmsg)"""
+        arg = (arg or "").strip()
+        sender = str(event.get_sender_id()).strip()
+        # 1) @ 提及（排除发送者自己）
+        for q in _extract_at_qqs(event):
+            if q != sender:
+                return q, None
+        # 2) 纯数字 → QQ 号
+        if arg.isdigit():
+            if arg == sender:
+                return None, "不能抢劫自己"
+            return arg, None
+        # 3) 用户名 → 反查绑定 QQ
+        if arg:
+            db = await self._db()
+            if db is not None:
+                users = await db.search_users(arg, limit=10)
+                matched = [u for u in users
+                           if str(u.get("username", "")).lower() == arg.lower()]
+                if len(matched) == 1:
+                    qq = await self.store.find_by_user_id(matched[0].get("id"))
+                    if qq and qq != sender:
+                        return qq, None
+                    return None, f"用户 {arg} 尚未绑定 QQ，无法作为目标"
+                return None, f"未找到用户名 {arg}（或存在多个匹配）"
+            return None, "当前为 API 模式，无法按用户名定位目标，请用 @ 或 QQ 号"
+        return None, "请指定目标：/抢劫 @某人 或 /抢劫 <QQ号/用户名>"
+
+    async def _rob_impl(self, event: AstrMessageEvent, target: str = ""):
+        if not self._cfg("db.rob_enabled", False):
+            yield event.plain_result("抢劫玩法未开启（需在数据库模式下打开「🔪 抢劫玩法」开关）")
+            return
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用抢劫")
+            return
+
+        qq = str(event.get_sender_id()).strip()
+        rec = await self.store.get(qq)
+        if not rec:
+            yield event.plain_result("抢劫前请先绑定 NewAPI 账号（/密码绑定 或 /绑定 <ID>）")
+            return
+
+        t_qq, err = await self._resolve_target_qq(event, target)
+        if err:
+            yield event.plain_result(err)
+            return
+
+        db = await self._db()
+        if db is None:
+            yield event.plain_result("抢劫玩法不可用：站点数据库未连接")
+            return
+
+        t_rec = await self.store.get(t_qq)
+        if not t_rec:
+            yield event.plain_result("目标尚未绑定 NewAPI 账号，无法抢劫")
+            return
+
+        # 双方账号存在性
+        attacker_u = await db.get_user(rec["user_id"])
+        if not attacker_u:
+            await self.store.remove(qq)
+            yield event.plain_result("你绑定的 NewAPI 账号已被站点删除，已自动解绑，请重新绑定")
+            return
+        target_u = await db.get_user(t_rec["user_id"])
+        if not target_u:
+            yield event.plain_result("目标绑定的 NewAPI 账号已被站点删除，无法抢劫")
+            return
+
+        # 冷却
+        def _num(key, default):
+            v = self._cfg(key, None)
+            if v is None or v == "":
+                return default
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        cd = int(_num("db.rob.cooldown_seconds", 300))
+        last = int(rec.get("last_rob") or 0)
+        now = time.time()
+        remain = last + cd - now
+        if remain > 0 and not self.debug:
+            yield event.plain_result(f"抢劫冷却中，还需 {int(remain)} 秒")
+            return
+
+        per = int(_num("quota_per_unit", 500000))
+        rate = _num("db.rob.success_rate", 0.5)
+        lo = _num("db.rob.amount_min_usd", 0.05)
+        hi = _num("db.rob.amount_max_usd", 0.5)
+        penalty_usd = _num("db.rob.penalty_usd", 0.1)
+        protect = _num("db.rob.protect_balance_usd", 0)
+        if lo > hi:
+            lo, hi = hi, lo
+
+        target_quota = int(target_u.get("quota") or 0)
+        protect_raw = int(round(protect * per))
+        if target_quota <= protect_raw:
+            yield event.plain_result("目标余额不足（低于保护线），无法抢劫")
+            return
+
+        # 计算抢劫金额（不超过目标余额 - 保护线）
+        amount = int(round(random.uniform(lo, hi) * per))
+        if amount <= 0:
+            amount = 1
+        cap = target_quota - protect_raw
+        if amount > cap:
+            amount = cap
+        if amount <= 0:
+            yield event.plain_result("目标余额不足（低于保护线），无法抢劫")
+            return
+
+        attacker_uid = int(rec["user_id"])
+        target_uid = int(t_rec["user_id"])
+        aname = getattr(event, "get_sender_name", lambda: qq)() or qq
+        tname = t_rec.get("username") or t_qq
+
+        def _mark_cooled():
+            rec["last_rob"] = int(now)
+            self.store.data["bindings"][qq] = rec
+            self.store._save_sync()
+
+        if random.random() < rate:
+            # 成功：先原子扣目标，再加抢劫者（加账失败则回滚目标）
+            if not await db.adjust(target_uid, -amount, require_balance=True):
+                yield event.plain_result("抢劫失败：目标余额变动异常，请稍后再试")
+                return
+            if not await db.adjust(attacker_uid, amount):
+                await db.adjust(target_uid, amount)
+                yield event.plain_result("抢劫失败：入账异常，已回滚，请稍后再试")
+                return
+            async with self.store.lock:
+                _mark_cooled()
+            yield event.plain_result(
+                f"🔪 抢劫成功！{aname} 从 {tname} 手中抢走 {self._fmt_quota(amount)}"
+            )
+        else:
+            # 失败：先原子扣抢劫者赔偿，再赔给目标（入账失败则回滚）
+            penalty = int(round(penalty_usd * per))
+            if penalty <= 0:
+                penalty = 1
+            if not await db.adjust(attacker_uid, -penalty, require_balance=True):
+                yield event.plain_result("😰 抢劫失败，且你的余额不足以支付赔偿，被抓现行！")
+                return
+            if not await db.adjust(target_uid, penalty):
+                await db.adjust(attacker_uid, penalty)
+                yield event.plain_result("抢劫失败：赔偿入账异常，已回滚，请稍后再试")
+                return
+            async with self.store.lock:
+                _mark_cooled()
+            yield event.plain_result(
+                f"😅 抢劫失败！{aname} 被 {tname} 反杀，赔偿 {self._fmt_quota(penalty)}"
+            )
+
     # ---------- 自助注册 ----------
     @filter.command("注册")
     async def register(self, event: AstrMessageEvent):
@@ -1672,6 +1861,7 @@ class NewAPIPlugin(Star):
             "/余额 - 查询账号余额\n"
             "/发红包 <个数> <总金额> - 发拼手气红包（真实扣款）\n"
             "/抢红包 - 抢群内红包（真实入账）\n"
+            "/抢劫 @某人 - 抢劫群友余额（真实扣款/入账，需开启抢劫玩法）\n"
             "管理员：/查用户 <关键词> / /强制解绑 <QQ号>\n"
             "自定义前缀（如已配置 %）：例如 %签到、%注册 等价于对应命令"
         )
@@ -1705,6 +1895,7 @@ class NewAPIPlugin(Star):
                     "取消绑定": (self._cancel_bind_impl, 0),
                     "发红包": (self._send_hongbao_impl, 2),
                     "抢红包": (self._grab_hongbao_impl, 0),
+                    "抢劫": (self._rob_impl, 1),
                     "帮助": (self._help_impl, 0),
                 }
                 if cmd not in handlers:
