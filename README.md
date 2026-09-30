@@ -235,6 +235,7 @@ exit;
 | `db.rob.amount_min` / `amount_max` | `1.0` / `10.0` | 单次抢到金额范围（美元，按 `quota_per_unit` 换算为额度扣除） |
 | `db.rob.penalty` | `1.0` | 抢劫失败赔偿（美元，赔给被抢者） |
 | `db.rob.cooldown_seconds` | `300` | 抢劫冷却时间（秒） |
+| `db.rob.daily_limit` | `0` | 每人每天最多抢劫次数（0 = 不限） |
 | `db.rob.protect_balance` | `0` | 目标余额保护线（美元，低于此值不可被抢） |
 
 ### 其他

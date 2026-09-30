@@ -200,6 +200,12 @@
             "type": "int",
             "default": 300
           },
+          "daily_limit": {
+            "description": "每人每天最多抢劫次数",
+            "type": "int",
+            "default": 0,
+            "hint": "0 = 不限；填 N 则每人每天最多抢 N 次，超过提示明日再来"
+          },
           "protect_balance": {
             "description": "目标余额保护线（美元）",
             "type": "float",

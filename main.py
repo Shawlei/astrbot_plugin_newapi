@@ -1369,6 +1369,17 @@ class NewAPIPlugin(Star):
             yield event.plain_result(f"抢劫冷却中，还需 {int(remain)} 秒")
             return
 
+        # 每日次数限制（0 = 不限）
+        daily_limit = int(_num("db.rob.daily_limit", 0))
+        if daily_limit > 0:
+            today = time.strftime("%Y-%m-%d")
+            rob_count = int(rec.get("rob_count") or 0)
+            if rec.get("rob_day") != today:
+                rob_count = 0
+            if rob_count >= daily_limit:
+                yield event.plain_result(f"今日抢劫次数已用完（每天最多 {daily_limit} 次），明天再来吧～")
+                return
+
         rate = _num("db.rob.success_rate", 0.5)
         per = int(self._cfg("quota_per_unit", 500000) or 500000)
         amount_min = _num("db.rob.amount_min", 1.0)       # 美元
@@ -1402,6 +1413,12 @@ class NewAPIPlugin(Star):
 
         def _mark_cooled():
             rec["last_rob"] = int(now)
+            today = time.strftime("%Y-%m-%d")
+            if rec.get("rob_day") != today:
+                rec["rob_day"] = today
+                rec["rob_count"] = 1
+            else:
+                rec["rob_count"] = int(rec.get("rob_count") or 0) + 1
             self.store.data["bindings"][qq] = rec
             self.store._save_sync()
 
