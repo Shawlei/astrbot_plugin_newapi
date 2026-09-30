@@ -693,6 +693,7 @@ class NewAPIPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         self.store = Store(self._get_data_dir() / "bindings.json")
+        self.regstore = Store(self._get_data_dir() / "registered.json")  # 注册未绑定的账号密码（供 /找回密码 兜底）
         self.hongbao = HongbaoStore(self._get_data_dir() / "hongbao.json")
         self.dbq = MySQLQuota(self._cfg)
         self.pending_binds = {}  # qq -> {user_id, username, expire, tries} ID绑定待验证
@@ -953,6 +954,7 @@ class NewAPIPlugin(Star):
             "last_checkin": 0,
             "pwd": obfuscate(password, self._pwd_key()),
         })
+        await self.regstore.remove(qq)  # 清理注册未绑定的残留记录
         yield event.plain_result(f"✅ 绑定成功！{username}，发送 /余额 查询额度，/签到 每日打卡")
 
     @filter.command("解绑", alias={"newapi解绑", "解绑账号"})
@@ -1129,11 +1131,14 @@ class NewAPIPlugin(Star):
         qq = str(event.get_sender_id()).strip()
         rec = await self.store.get(qq)
         if not rec:
+            # 注册后未绑定的账号：从注册记录兜底找回密码
+            rec = await self.regstore.get(qq)
+        if not rec:
             yield event.plain_result("你还没有绑定/注册过账号，请先在群里使用 /注册 或私聊 /密码绑定")
             return
         pwd = deobfuscate(rec.get("pwd", ""), self._pwd_key())
         if not pwd:
-            yield event.plain_result("绑定记录中没有保存密码，请 /解绑 后重新注册/绑定")
+            yield event.plain_result("记录中没有保存密码，请 /解绑 后重新注册/绑定")
             return
         yield event.plain_result(
             f"👤 账号：{rec.get('username')}\n"
@@ -1517,7 +1522,14 @@ class NewAPIPlugin(Star):
         rec = await self.store.get(qq)
         if rec and not self.debug:
             yield event.plain_result(
-                f"你已拥有账号：{rec.get('username')}，无需重复注册（如需更换请先 /解绑）"
+                f"你已绑定账号：{rec.get('username')}，无需重复注册（如需更换请先 /解绑）"
+            )
+            return
+        reg = await self.regstore.get(qq)
+        if reg and not self.debug:
+            yield event.plain_result(
+                f"你已注册过账号（ID:{reg.get('user_id')}），尚未绑定。\n"
+                f"请发送 /绑定 {reg.get('user_id')} 完成绑定；忘记密码可私聊 /找回密码"
             )
             return
 
@@ -1576,12 +1588,11 @@ class NewAPIPlugin(Star):
                     return
                 if not await db.set_group(uid, reg_group):
                     logger.error("[newapi] 设置注册分组失败(DB)")
-            await self.store.set(qq, {
+            # 注册不自动绑定：仅保存账号密码供 /找回密码 兜底，绑定由群友自行 /绑定 <ID>
+            await self.regstore.set(qq, {
                 "user_id": uid,
                 "username": username,
-                "bound_at": int(time.time()),
-                "last_checkin": 0,
-                "registered": True,
+                "registered_at": int(time.time()),
                 "pwd": obfuscate(password, self._pwd_key()),
             })
             title = "注册成功！" if is_new else "找回成功！已为你重置密码"
@@ -1592,13 +1603,16 @@ class NewAPIPlugin(Star):
                 f"🔑 密码：{password}\n"
                 f"👥 分组：{reg_group}\n"
                 f"🌐 登录：{self.client.base_url}\n"
-                f"请妥善保管账号密码，也可使用 /余额 /签到 等命令"
+                f"请妥善保管账号密码；回到群里发送 /绑定 {uid} 即可绑定账号并自动切换分组"
             )
             if sent:
-                yield event.plain_result("✅ 注册成功！账号密码已私聊发送给你，请查收～")
+                yield event.plain_result(
+                    f"✅ 注册成功！账号密码已私聊发送给你，请回群里发送 /绑定 {uid} 完成绑定"
+                )
             else:
                 yield event.plain_result(
-                    "✅ 注册成功！但主动私聊发送失败，请私聊我发送 /找回密码 获取账号密码"
+                    f"✅ 注册成功！但主动私聊发送失败，请私聊我发送 /找回密码 获取账号密码，"
+                    f"再回群里发送 /绑定 {uid} 完成绑定"
                 )
             return
 
@@ -1648,12 +1662,11 @@ class NewAPIPlugin(Star):
         if not group_ok:
             logger.error(f"[newapi] 设置注册分组失败: {data.get('message')}")
 
-        await self.store.set(qq, {
+        # 注册不自动绑定：仅保存账号密码供 /找回密码 兜底，绑定由群友自行 /绑定 <ID>
+        await self.regstore.set(qq, {
             "user_id": uid,
             "username": username,
-            "bound_at": int(time.time()),
-            "last_checkin": 0,
-            "registered": True,
+            "registered_at": int(time.time()),
             "pwd": obfuscate(password, self._pwd_key()),
         })
 
@@ -1666,16 +1679,17 @@ class NewAPIPlugin(Star):
             f"🔑 密码：{password}\n"
             f"👥 分组：{reg_group}\n"
             f"🌐 登录：{base}\n"
-            f"请妥善保管账号密码，也可使用 /余额 /签到 等命令"
+            f"请妥善保管账号密码；回到群里发送 /绑定 {uid} 即可绑定账号并自动切换分组"
         )
         if sent:
             yield event.plain_result(
-                "✅ 注册成功！账号密码已私聊发送给你，请查收～"
+                f"✅ 注册成功！账号密码已私聊发送给你，请回群里发送 /绑定 {uid} 完成绑定"
                 + ("" if group_ok else "\n⚠️ 默认分组设置失败，请联系管理员")
             )
         else:
             yield event.plain_result(
-                "✅ 注册成功！但主动私聊发送失败，请私聊我发送 /找回密码 获取账号密码"
+                f"✅ 注册成功！但主动私聊发送失败，请私聊我发送 /找回密码 获取账号密码，"
+                f"再回群里发送 /绑定 {uid} 完成绑定"
                 + ("" if group_ok else "\n⚠️ 默认分组设置失败，请联系管理员")
             )
 
@@ -1864,6 +1878,7 @@ class NewAPIPlugin(Star):
                 "last_checkin": 0,
                 "pwd": obfuscate(password, self._pwd_key()),
             })
+            await self.regstore.remove(qq)  # 清理注册未绑定的残留记录
 
             group_msg = ""
             bind_group = str(self._cfg("bind_group", "") or "").strip()
