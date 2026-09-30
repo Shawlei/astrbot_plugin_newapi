@@ -691,14 +691,14 @@ class NewAPIPlugin(Star):
 
     # ---------- 基础工具 ----------
     def _cfg(self, key, default=None):
+        """读取配置，支持 db.rob.penalty 这类多级点号 key（按 . 递归下钻）"""
         try:
-            if "." in key:
-                section, sub = key.split(".", 1)
-                sec = self.config.get(section, {})
-                if isinstance(sec, dict):
-                    return sec.get(sub, default)
-                return default
-            return self.config.get(key, default)
+            node = self.config
+            for part in str(key).split("."):
+                if node is None or not hasattr(node, "get"):
+                    return default
+                node = node.get(part)
+            return node if node is not None else default
         except Exception:
             return default
 
