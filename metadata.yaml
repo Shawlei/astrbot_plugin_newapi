@@ -2,6 +2,6 @@ name: astrbot_plugin_newapi_helper
 display_name: NewAPI 助手
 desc: 在 QQ 群绑定 NewAPI 账号，支持每日签到、余额查询、账号绑定/解绑、退群自动删号
 help: 发送 /newapi帮助 查看命令
-version: 0.0.13
+version: 0.0.14
 author: Shawlei
 repo: https://github.com/Shawlei/astrbot_plugin_newapi_helper

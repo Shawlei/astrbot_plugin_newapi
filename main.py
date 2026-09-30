@@ -1345,24 +1345,26 @@ class NewAPIPlugin(Star):
             yield event.plain_result(f"抢劫冷却中，还需 {int(remain)} 秒")
             return
 
+        per = int(_num("quota_per_unit", 500000))
         rate = _num("db.rob.success_rate", 0.5)
-        amount_min = int(_num("db.rob.amount_min", 1000))
-        amount_max = int(_num("db.rob.amount_max", 10000))
-        penalty = int(_num("db.rob.penalty", 1000))
-        protect = int(_num("db.rob.protect_balance", 0))
-        if amount_min > amount_max:
-            amount_min, amount_max = amount_max, amount_min
+        lo = _num("db.rob.amount_min_usd", 0.05)
+        hi = _num("db.rob.amount_max_usd", 0.5)
+        penalty_usd = _num("db.rob.penalty_usd", 0.1)
+        protect_usd = _num("db.rob.protect_balance_usd", 0)
+        if lo > hi:
+            lo, hi = hi, lo
 
         target_quota = int(target_u.get("quota") or 0)
-        if target_quota <= protect:
+        protect_raw = int(round(protect_usd * per))
+        if target_quota <= protect_raw:
             yield event.plain_result("目标余额不足（低于保护线），无法抢劫")
             return
 
-        # 计算抢劫金额：在 [min,max] 内随机抽整数，不超过目标余额 - 保护线
-        amount = random.randint(amount_min, amount_max)
+        # 计算抢劫金额（美元 → raw quota，不超过目标余额 - 保护线）
+        amount = int(round(random.uniform(lo, hi) * per))
         if amount <= 0:
             amount = 1
-        cap = target_quota - protect
+        cap = target_quota - protect_raw
         if amount > cap:
             amount = cap
         if amount <= 0:
@@ -1391,10 +1393,11 @@ class NewAPIPlugin(Star):
             async with self.store.lock:
                 _mark_cooled()
             yield event.plain_result(
-                f"🔪 抢劫成功！{aname} 从 {tname} 手中抢走 {amount} 额度"
+                f"🔪 抢劫成功！{aname} 从 {tname} 手中抢走 {self._fmt_quota(amount)}"
             )
         else:
             # 失败：先原子扣抢劫者赔偿，再赔给目标（入账失败则回滚）
+            penalty = int(round(penalty_usd * per))
             if penalty <= 0:
                 penalty = 1
             if not await db.adjust(attacker_uid, -penalty, require_balance=True):
@@ -1407,7 +1410,7 @@ class NewAPIPlugin(Star):
             async with self.store.lock:
                 _mark_cooled()
             yield event.plain_result(
-                f"😅 抢劫失败！{aname} 被 {tname} 反杀，赔偿 {penalty} 额度"
+                f"😅 抢劫失败！{aname} 被 {tname} 反杀，赔偿 {self._fmt_quota(penalty)}"
             )
 
     # ---------- 自助注册 ----------

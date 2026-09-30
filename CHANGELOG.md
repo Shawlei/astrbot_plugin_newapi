@@ -3,6 +3,11 @@
 所有重要变更都记录在此文件中。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.0.14] - 2026-09-30
+
+### 变更
+- 抢劫金额改回按美元扣除：配置 `amount_min_usd` / `amount_max_usd` / `penalty_usd` / `protect_balance_usd` 填美元，自动按 `quota_per_unit` 换算为额度；回复仍显示 `$` 金额
+
 ## [0.0.13] - 2026-09-30
 
 ### 修复
