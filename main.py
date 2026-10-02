@@ -1930,17 +1930,19 @@ class NewAPIPlugin(Star):
         pid = p.get("id")
         game_type = p.get("gameType")
         bet = p.get("bet")
-        qq = str(p.get("qq") or "").strip()
+        user_id = int(p.get("userId") or 0)
+        username = str(p.get("username") or "").strip()
         if game_type not in urls:
             await self._game_api(base, "POST", f"/api/invite/{pid}/fail", {"error": "不支持的游戏类型"})
             return
-        rec = await self.store.get(qq)
-        if not rec:
-            await self._game_api(base, "POST", f"/api/invite/{pid}/fail",
-                                 {"error": "该 QQ 尚未绑定 NewAPI 账号，请先在群里 /绑定"})
+        if not user_id:
+            await self._game_api(base, "POST", f"/api/invite/{pid}/fail", {"error": "无效的用户身份"})
             return
-        name = (await self._member_name(bot, gid, qq)) or rec.get("username") or qq
-        player = {"qq": qq, "name": name, "userId": int(rec["user_id"])}
+        # userId -> QQ 反查（群广播与群昵称用），未绑定则退回登录用户名
+        qq = await self.store.find_by_user_id(user_id) or ""
+        name = (await self._member_name(bot, gid, qq)) if qq else ""
+        name = name or username or str(user_id)
+        player = {"qq": qq or str(user_id), "name": name, "userId": user_id}
         ok, data = await self._game_api(base, "POST", "/api/room", {
             "gameType": game_type, "groupId": gid, "player": player, "bet": bet,
         })
@@ -1965,14 +1967,15 @@ class NewAPIPlugin(Star):
     async def _handle_accept(self, base: str, gid: str, bot, p: dict):
         pid = p.get("id")
         rid = p.get("roomId")
-        qq = str(p.get("qq") or "").strip()
-        rec = await self.store.get(qq)
-        if not rec:
-            await self._game_api(base, "POST", f"/api/accept/{pid}/fail",
-                                 {"error": "该 QQ 尚未绑定 NewAPI 账号，请先在群里 /绑定"})
+        user_id = int(p.get("userId") or 0)
+        username = str(p.get("username") or "").strip()
+        if not user_id:
+            await self._game_api(base, "POST", f"/api/accept/{pid}/fail", {"error": "无效的用户身份"})
             return
-        name = (await self._member_name(bot, gid, qq)) or rec.get("username") or qq
-        player = {"qq": qq, "name": name, "userId": int(rec["user_id"])}
+        qq = await self.store.find_by_user_id(user_id) or ""
+        name = (await self._member_name(bot, gid, qq)) if qq else ""
+        name = name or username or str(user_id)
+        player = {"qq": qq or str(user_id), "name": name, "userId": user_id}
         ok, data = await self._game_api(base, "POST", f"/api/room/{rid}/join", {"player": player})
         if not ok or not isinstance(data, dict) or data.get("code") != "started":
             err = "加入失败"
@@ -2705,7 +2708,7 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
             "/排行榜（/排行）[llm|调用|消耗] - 使用排行榜（模型热度/调用次数/额度消耗，渲染成图片）\n"
             "/猜大小 <大|小> <金额> - 猜三骰点数和（1:1，真实额度，需开启游戏）\n"
             "/猜点数 <1~6> <金额> - 猜单骰点数（高赔率，真实额度，需开启游戏）\n"
-            "/游戏大厅（/大厅）- 群发游戏大厅链接，进大厅选游戏后在网页发起/接受对战（需开启对战平台）\n"
+            "/游戏大厅（/大厅）- 群发游戏大厅链接：单机小游戏(老虎机/21点/24点)、模拟股市、象棋/五子棋网页对战（NewAPI 登录，需开启对战平台）\n"
             "/象棋对战 [押注美元] - 发起象棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/五子棋对战 [押注美元] - 发起五子棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
