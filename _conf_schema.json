@@ -308,6 +308,18 @@
         "type": "float",
         "default": 10.0,
         "hint": "玩家发起对战未填写押注金额时，使用该默认值"
+      },
+      "battle_min_bet": {
+        "description": "对战最低押注（美元）",
+        "type": "float",
+        "default": 10.0,
+        "hint": "单局对战最低押注金额，低于此值将被拒绝；需与游戏服务端 MIN_BET 保持一致"
+      },
+      "battle_max_bet": {
+        "description": "对战最高押注（美元）",
+        "type": "float",
+        "default": 200.0,
+        "hint": "单局对战最高押注金额，高于此值将被拒绝；需与游戏服务端 MAX_BET 保持一致"
       }
     }
   },

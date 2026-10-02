@@ -697,6 +697,7 @@ class NewAPIPlugin(Star):
         self.hongbao = HongbaoStore(self._get_data_dir() / "hongbao.json")
         self.dbq = MySQLQuota(self._cfg)
         self.pending_binds = {}  # qq -> {user_id, username, expire, tries} ID绑定待验证
+        self._hall_tasks = {}   # gid -> asyncio.Task 游戏大厅轮询任务
         self.client = NewAPIClient(
             str(self._cfg("base_url", "")),
             str(self._cfg("admin_token", "")),
@@ -1697,6 +1698,16 @@ class NewAPIPlugin(Star):
         async for r in self._battle_impl(event, "gomoku", bet):
             yield r
 
+    @filter.command("游戏大厅", alias={"大厅", "游戏中心"})
+    async def game_hall(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """游戏大厅：群发大厅链接，群友进大厅选游戏后在网页发起/接受对战"""
+        async for r in self._hall_impl(event):
+            yield r
+
     async def _battle_impl(self, event: AstrMessageEvent, game_type: str, bet: str = ""):
         names = {"xiangqi": "中国象棋", "gomoku": "五子棋"}
         urls = {"xiangqi": "xiangqi.html", "gomoku": "gomoku.html"}
@@ -1720,12 +1731,17 @@ class NewAPIPlugin(Star):
             return
 
         # 解析押注（美元，自由押注）
+        min_bet = float(self._cfg("battle.battle_min_bet", 10) or 10)
+        max_bet = float(self._cfg("battle.battle_max_bet", 200) or 200)
         try:
             bet_usd = float(str(bet or "").strip())
         except (TypeError, ValueError):
             bet_usd = 0.0
         if bet_usd <= 0:
             bet_usd = float(self._cfg("battle.battle_default_bet", 10) or 10)
+        if bet_usd < min_bet or bet_usd > max_bet:
+            yield event.plain_result(f"押注金额需在 ${min_bet:g}~${max_bet:g} 美元之间")
+            return
 
         gid = str(event.get_group_id())
         player = {"qq": qq, "name": rec.get("username") or qq, "userId": int(rec["user_id"])}
@@ -1847,6 +1863,129 @@ class NewAPIPlugin(Star):
         except Exception as e:
             logger.error(f"[newapi] 群消息发送失败: {e}")
             return False
+
+    async def _member_name(self, bot, gid: str, qq: str) -> str:
+        """获取群友的群昵称（优先群名片 card，否则 nickname）"""
+        try:
+            info = await bot.api.call_action(
+                "get_group_member_info", group_id=int(gid), user_id=int(qq)
+            )
+            if isinstance(info, dict):
+                return str(info.get("card") or info.get("nickname") or "").strip()
+        except Exception as e:
+            logger.warning(f"[newapi] 获取群昵称失败: {e}")
+        return ""
+
+    async def _hall_impl(self, event: AstrMessageEvent):
+        """游戏大厅：群发大厅链接，并启动后台轮询处理网页发起的邀请/接受"""
+        if not self._cfg("battle_enabled", False):
+            yield event.plain_result("对战平台未开启（可在插件配置打开 battle_enabled）")
+            return
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用游戏大厅")
+            return
+        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        if not base:
+            yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写对战游戏服务地址")
+            return
+        gid = str(event.get_group_id())
+        link = f"{base}/?gid={gid}"
+        if gid not in self._hall_tasks or self._hall_tasks[gid].done():
+            self._hall_tasks[gid] = asyncio.create_task(self._hall_poll(base, gid, event.bot))
+        yield event.plain_result(
+            f"🎮 游戏大厅\n{link}\n\n"
+            f"进大厅选游戏（象棋 / 五子棋），在游戏页点「邀请群友对战」即可发起对局"
+        )
+
+    async def _hall_poll(self, base: str, gid: str, bot):
+        """后台轮询游戏服务 pending 队列，处理网页发起的邀请/接受"""
+        processed = set()
+        try:
+            for _ in range(1200):  # 最多约 1 小时（2s × 1200）
+                await asyncio.sleep(2)
+                ok, data = await self._game_api(base, "GET", f"/api/pending?gid={gid}")
+                if not ok:
+                    continue
+                for p in (data.get("list") or []):
+                    pid = p.get("id")
+                    if not pid or pid in processed:
+                        continue
+                    processed.add(pid)
+                    asyncio.create_task(self._handle_pending(base, gid, bot, p))
+        except Exception as e:
+            logger.error(f"[newapi] 大厅轮询异常: {e}")
+
+    async def _handle_pending(self, base: str, gid: str, bot, p: dict):
+        try:
+            if p.get("type") == "invite":
+                await self._handle_invite(base, gid, bot, p)
+            elif p.get("type") == "accept":
+                await self._handle_accept(base, gid, bot, p)
+        except Exception as e:
+            logger.error(f"[newapi] 处理 pending 失败: {e}")
+
+    async def _handle_invite(self, base: str, gid: str, bot, p: dict):
+        names = {"xiangqi": "中国象棋", "gomoku": "五子棋"}
+        urls = {"xiangqi": "xiangqi.html", "gomoku": "gomoku.html"}
+        pid = p.get("id")
+        game_type = p.get("gameType")
+        bet = p.get("bet")
+        qq = str(p.get("qq") or "").strip()
+        if game_type not in urls:
+            await self._game_api(base, "POST", f"/api/invite/{pid}/fail", {"error": "不支持的游戏类型"})
+            return
+        rec = await self.store.get(qq)
+        if not rec:
+            await self._game_api(base, "POST", f"/api/invite/{pid}/fail",
+                                 {"error": "该 QQ 尚未绑定 NewAPI 账号，请先在群里 /绑定"})
+            return
+        name = (await self._member_name(bot, gid, qq)) or rec.get("username") or qq
+        player = {"qq": qq, "name": name, "userId": int(rec["user_id"])}
+        ok, data = await self._game_api(base, "POST", "/api/room", {
+            "gameType": game_type, "groupId": gid, "player": player, "bet": bet,
+        })
+        if not ok or not isinstance(data, dict) or data.get("code") != "created":
+            err = "创建房间失败"
+            if isinstance(data, dict):
+                err = str(data.get("error") or err)
+            await self._game_api(base, "POST", f"/api/invite/{pid}/fail", {"error": err})
+            return
+        room = data.get("room") or {}
+        rid = room.get("id")
+        tokens = room.get("tokens") or {}
+        await self._game_api(base, "POST", f"/api/invite/{pid}/resolve", {
+            "roomId": rid, "player1Token": tokens.get("1", ""),
+        })
+        accept_link = f"{base}/{urls[game_type]}?room={rid}&invite=1&gid={gid}"
+        await self._bot_send_group(bot, gid, (
+            f"🎮 {name} 发起了{names.get(game_type, game_type)}对战(1/2)，押注 ${bet:g}\n"
+            f"点击链接接受对战：{accept_link}"
+        ))
+
+    async def _handle_accept(self, base: str, gid: str, bot, p: dict):
+        pid = p.get("id")
+        rid = p.get("roomId")
+        qq = str(p.get("qq") or "").strip()
+        rec = await self.store.get(qq)
+        if not rec:
+            await self._game_api(base, "POST", f"/api/accept/{pid}/fail",
+                                 {"error": "该 QQ 尚未绑定 NewAPI 账号，请先在群里 /绑定"})
+            return
+        name = (await self._member_name(bot, gid, qq)) or rec.get("username") or qq
+        player = {"qq": qq, "name": name, "userId": int(rec["user_id"])}
+        ok, data = await self._game_api(base, "POST", f"/api/room/{rid}/join", {"player": player})
+        if not ok or not isinstance(data, dict) or data.get("code") != "started":
+            err = "加入失败"
+            if isinstance(data, dict):
+                err = str(data.get("error") or err)
+            await self._game_api(base, "POST", f"/api/accept/{pid}/fail", {"error": err})
+            return
+        jroom = data.get("room") or {}
+        tokens = jroom.get("tokens") or {}
+        await self._game_api(base, "POST", f"/api/accept/{pid}/resolve", {
+            "player2Token": tokens.get("2", ""),
+        })
+        await self._bot_send_group(bot, gid, f"⚔️ {name} 已接受对战，双方进入对局")
 
     # ---------- 自助注册 ----------
     @filter.command("注册")
@@ -2566,6 +2705,7 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
             "/排行榜（/排行）[llm|调用|消耗] - 使用排行榜（模型热度/调用次数/额度消耗，渲染成图片）\n"
             "/猜大小 <大|小> <金额> - 猜三骰点数和（1:1，真实额度，需开启游戏）\n"
             "/猜点数 <1~6> <金额> - 猜单骰点数（高赔率，真实额度，需开启游戏）\n"
+            "/游戏大厅（/大厅）- 群发游戏大厅链接，进大厅选游戏后在网页发起/接受对战（需开启对战平台）\n"
             "/象棋对战 [押注美元] - 发起象棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/五子棋对战 [押注美元] - 发起五子棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
@@ -2595,6 +2735,12 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
                 if not parts:
                     return
                 cmd, args = parts[0], parts[1:]
+                # 游戏大厅
+                if cmd in ("游戏大厅", "大厅", "游戏中心"):
+                    async for r in self._hall_impl(event):
+                        yield r
+                    event.stop_event()
+                    return
                 # 对战指令：押注可选（%象棋对战 [押注美元] / %五子棋对战 [押注美元]）
                 if cmd in ("象棋对战", "象棋", "下象棋", "五子棋对战", "五子棋", "下五子棋"):
                     bet = args[0] if args else ""
