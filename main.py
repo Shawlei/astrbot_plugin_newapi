@@ -1676,6 +1676,178 @@ class NewAPIPlugin(Star):
                 f"🎲 {result}\n😢 猜错了，输掉 {self._fmt_quota(amount)}"
             )
 
+    # ---------- 对战平台（象棋 / 五子棋） ----------
+    @filter.command("象棋对战", alias={"象棋", "下象棋"})
+    async def xiangqi_battle(self, event: AstrMessageEvent, bet: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """象棋对战：%象棋对战 [押注美元]，匹配到对手后私聊发送对战链接，真实额度结算"""
+        async for r in self._battle_impl(event, "xiangqi", bet):
+            yield r
+
+    @filter.command("五子棋对战", alias={"五子棋", "下五子棋"})
+    async def gomoku_battle(self, event: AstrMessageEvent, bet: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """五子棋对战：%五子棋对战 [押注美元]，匹配到对手后私聊发送对战链接，真实额度结算"""
+        async for r in self._battle_impl(event, "gomoku", bet):
+            yield r
+
+    async def _battle_impl(self, event: AstrMessageEvent, game_type: str, bet: str = ""):
+        names = {"xiangqi": "中国象棋", "gomoku": "五子棋"}
+        urls = {"xiangqi": "xiangqi.html", "gomoku": "gomoku.html"}
+        cmds = {"xiangqi": "象棋对战", "gomoku": "五子棋对战"}
+
+        if not self._cfg("battle_enabled", False):
+            yield event.plain_result("对战平台未开启（可在插件配置打开 battle_enabled）")
+            return
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用对战")
+            return
+        base = (self._cfg("game_server_url", "") or "").strip().rstrip("/")
+        if not base:
+            yield event.plain_result("游戏服务未配置：请在插件配置里填写 game_server_url（游戏服务地址）")
+            return
+
+        qq = str(event.get_sender_id()).strip()
+        rec = await self.store.get(qq)
+        if not rec:
+            yield event.plain_result("请先绑定 NewAPI 账号（/密码绑定 或 /绑定 <ID>）再参与对战")
+            return
+
+        # 解析押注（美元，自由押注）
+        try:
+            bet_usd = float(str(bet or "").strip())
+        except (TypeError, ValueError):
+            bet_usd = 0.0
+        if bet_usd <= 0:
+            bet_usd = float(self._cfg("battle_default_bet", 10) or 10)
+
+        gid = str(event.get_group_id())
+        player = {"qq": qq, "name": rec.get("username") or qq, "userId": int(rec["user_id"])}
+
+        ok, data = await self._game_api(
+            base, "POST", "/api/room",
+            {"gameType": game_type, "groupId": gid, "player": player, "bet": bet_usd},
+        )
+        if not ok:
+            yield event.plain_result(str(data.get("error") or "游戏服务不可用，请稍后再试"))
+            return
+
+        if data.get("code") == "created":
+            yield event.plain_result(
+                f"🎮 {names[game_type]}对战(1/2)，押注 ${bet_usd:g}，等待对手加入\n"
+                f"对手发送 %{cmds[game_type]} 即可匹配开战"
+            )
+            return
+
+        # 已有等待房间
+        room = data.get("room") or {}
+        rid = room.get("id")
+        if not rid:
+            yield event.plain_result("创建房间失败，请稍后再试")
+            return
+        p1 = (room.get("players") or {}).get("1") or {}
+        if str(p1.get("qq")) == qq:
+            yield event.plain_result("你已发起过对战，正在等待对手加入，请稍候")
+            return
+
+        ok2, jd = await self._game_api(base, "POST", f"/api/room/{rid}/join", {"player": player})
+        if not ok2:
+            yield event.plain_result(str(jd.get("error") or "加入失败，请稍后再试"))
+            return
+
+        jroom = jd.get("room") or {}
+        tokens = jroom.get("tokens") or {}
+        r1 = (jroom.get("players") or {}).get("1") or {}
+        r2 = (jroom.get("players") or {}).get("2") or {}
+        link1 = f"{base}/{urls[game_type]}?room={rid}&player=1&token={tokens.get('1', '')}"
+        link2 = f"{base}/{urls[game_type]}?room={rid}&player=2&token={tokens.get('2', '')}"
+
+        await self._send_private(
+            event, str(r1.get("qq")),
+            f"⚔️ {names[game_type]}对战匹配成功！\n对手：{r2.get('name')}\n押注：${bet_usd:g}\n点击开战：{link1}",
+        )
+        await self._send_private(
+            event, str(r2.get("qq")),
+            f"⚔️ {names[game_type]}对战匹配成功！\n对手：{r1.get('name')}\n押注：${bet_usd:g}\n点击开战：{link2}",
+        )
+
+        yield event.plain_result(
+            f"⚔️ {names[game_type]}对战匹配成功！\n"
+            f"{r1.get('name')} vs {r2.get('name')}，押注 ${bet_usd:g}\n"
+            f"对战链接已私聊发送，双方点击进入即可开战"
+        )
+
+        # 后台轮询对局结果，结束后回群播报
+        asyncio.create_task(
+            self._battle_poll(base, rid, event.bot, gid, game_type, bet_usd, r1, r2)
+        )
+
+    async def _battle_poll(self, base, rid, bot, gid, game_type, bet_usd, p1, p2):
+        names = {"xiangqi": "中国象棋", "gomoku": "五子棋"}
+        try:
+            for _ in range(1200):  # 最多约 1 小时（3s × 1200）
+                await asyncio.sleep(3)
+                ok, data = await self._game_api(base, "GET", f"/api/room/{rid}")
+                if not ok:
+                    continue
+                if data.get("state") != "finished":
+                    continue
+                winner = int(data.get("winner") or 0)
+                reason = data.get("reason") or "正常结束"
+                s1 = (data.get("stats") or {}).get("1") or {}
+                s2 = (data.get("stats") or {}).get("2") or {}
+                n1 = p1.get("name") or p1.get("qq")
+                n2 = p2.get("name") or p2.get("qq")
+                if winner == 1:
+                    head = f"🏆 {n1} 获胜！{n2} 落败"
+                    money = f"💰 结算：{n1} +${bet_usd * 2:g}，{n2} -${bet_usd:g}"
+                elif winner == 2:
+                    head = f"🏆 {n2} 获胜！{n1} 落败"
+                    money = f"💰 结算：{n2} +${bet_usd * 2:g}，{n1} -${bet_usd:g}"
+                else:
+                    head = "🤝 双方平局"
+                    money = "💰 结算：双方各退回押注"
+                msg = (
+                    f"⚔️ {names.get(game_type, game_type)}对战结束\n"
+                    f"{head}（{reason}）\n"
+                    f"{money}\n"
+                    f"📊 {n1}：{s1.get('win', 0)}胜{s1.get('lose', 0)}负"
+                    f" · {n2}：{s2.get('win', 0)}胜{s2.get('lose', 0)}负"
+                )
+                await self._bot_send_group(bot, gid, msg)
+                return
+        except Exception as e:
+            logger.error(f"[newapi] 对战轮询异常: {e}")
+
+    async def _game_api(self, base: str, method: str, path: str, body: dict = None):
+        """调用游戏服务 HTTP API，返回 (ok, data)"""
+        url = base + path
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+                if method == "POST":
+                    async with s.post(url, json=body) as r:
+                        return True, (await r.json(content_type=None))
+                async with s.get(url) as r:
+                    return True, (await r.json(content_type=None))
+        except Exception as e:
+            logger.error(f"[newapi] 游戏服务请求失败 {url}: {e}")
+            return False, {"error": "游戏服务不可用"}
+
+    async def _bot_send_group(self, bot, gid, text: str) -> bool:
+        """主动发送群消息（用于对战结束等异步播报）"""
+        try:
+            await bot.api.call_action("send_group_msg", group_id=int(gid), message=text)
+            return True
+        except Exception as e:
+            logger.error(f"[newapi] 群消息发送失败: {e}")
+            return False
+
     # ---------- 自助注册 ----------
     @filter.command("注册")
     async def register(self, event: AstrMessageEvent):
@@ -2394,6 +2566,8 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
             "/排行榜（/排行）[llm|调用|消耗] - 使用排行榜（模型热度/调用次数/额度消耗，渲染成图片）\n"
             "/猜大小 <大|小> <金额> - 猜三骰点数和（1:1，真实额度，需开启游戏）\n"
             "/猜点数 <1~6> <金额> - 猜单骰点数（高赔率，真实额度，需开启游戏）\n"
+            "/象棋对战 [押注美元] - 发起象棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
+            "/五子棋对战 [押注美元] - 发起五子棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
             "/帮助 - 本命令列表\n"
             "管理员：/查用户 <用户名/数字ID/QQ号/@某人>、/强制解绑 <QQ号>\n"
@@ -2421,6 +2595,14 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
                 if not parts:
                     return
                 cmd, args = parts[0], parts[1:]
+                # 对战指令：押注可选（%象棋对战 [押注美元] / %五子棋对战 [押注美元]）
+                if cmd in ("象棋对战", "象棋", "下象棋", "五子棋对战", "五子棋", "下五子棋"):
+                    bet = args[0] if args else ""
+                    gt = "xiangqi" if cmd in ("象棋对战", "象棋", "下象棋") else "gomoku"
+                    async for r in self._battle_impl(event, gt, bet):
+                        yield r
+                    event.stop_event()
+                    return
                 handlers = {
                     "注册": (self._register_impl, 0),
                     "找回密码": (self._get_password_impl, 0),

@@ -284,6 +284,24 @@
     "default": false,
     "hint": "开启后：签到跳过冷却可无限重复、注册/绑定跳过已绑定检查、解绑无记录不报错；并在后台日志输出每次 API 请求与响应详情（用于排查签到未到账等问题）"
   },
+  "battle_enabled": {
+    "description": "⚔️ 对战平台开关（象棋 / 五子棋，真实额度）",
+    "type": "bool",
+    "default": false,
+    "hint": "开启后支持 %象棋对战、%五子棋对战，自由押注，赢家拿双方押注总额。需同时填写 game_server_url（游戏服务地址）"
+  },
+  "game_server_url": {
+    "description": "对战游戏服务地址",
+    "type": "string",
+    "default": "",
+    "hint": "对战游戏服务（Express + WebSocket）的地址，如 http://p.2e2.top:46110，不要以 / 结尾；留空则对战不可用"
+  },
+  "battle_default_bet": {
+    "description": "对战默认押注（美元）",
+    "type": "float",
+    "default": 10.0,
+    "hint": "玩家发起对战未填写押注金额时，使用该默认值"
+  },
   "slash_enabled": {
     "description": "启用 / 原生命令",
     "type": "bool",
