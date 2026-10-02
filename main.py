@@ -1708,9 +1708,9 @@ class NewAPIPlugin(Star):
         if not self._is_group(event):
             yield event.plain_result("请在群聊中使用对战")
             return
-        base = (self._cfg("game_server_url", "") or "").strip().rstrip("/")
+        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
         if not base:
-            yield event.plain_result("游戏服务未配置：请在插件配置里填写 game_server_url（游戏服务地址）")
+            yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写对战游戏服务地址")
             return
 
         qq = str(event.get_sender_id()).strip()
@@ -1725,7 +1725,7 @@ class NewAPIPlugin(Star):
         except (TypeError, ValueError):
             bet_usd = 0.0
         if bet_usd <= 0:
-            bet_usd = float(self._cfg("battle_default_bet", 10) or 10)
+            bet_usd = float(self._cfg("battle.battle_default_bet", 10) or 10)
 
         gid = str(event.get_group_id())
         player = {"qq": qq, "name": rec.get("username") or qq, "userId": int(rec["user_id"])}
