@@ -1500,6 +1500,182 @@ class NewAPIPlugin(Star):
                 f"😅 抢劫失败！{aname} 被 {tname} 反杀，赔偿 {self._fmt_quota(penalty)}"
             )
 
+    # ---------- 猜大小 / 猜点数（额度小游戏） ----------
+    @filter.command("猜大小", alias={"大小", "比大小"})
+    async def guess_size(self, event: AstrMessageEvent, choice: str = "", amount: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """猜大小：/猜大小 <大|小> <金额>，三骰点数和 3~10 为小、11~18 为大，1:1 真实结算"""
+        async for r in self._guess_size_impl(event, choice, amount):
+            yield r
+
+    @filter.command("猜点数", alias={"点数", "猜骰子"})
+    async def guess_point(self, event: AstrMessageEvent, point: str = "", amount: str = ""):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """猜点数：/猜点数 <1~6> <金额>，猜单骰点数，高赔率真实结算"""
+        async for r in self._guess_point_impl(event, point, amount):
+            yield r
+
+    async def _guess_size_impl(self, event: AstrMessageEvent, choice: str = "", amount: str = ""):
+        async for r in self._game_impl(event, "size", choice, amount):
+            yield r
+
+    async def _guess_point_impl(self, event: AstrMessageEvent, point: str = "", amount: str = ""):
+        async for r in self._game_impl(event, "point", point, amount):
+            yield r
+
+    async def _game_impl(self, event: AstrMessageEvent, game_type: str, choice: str, amount_str: str):
+        if not self._cfg("db.game_enabled", False):
+            yield event.plain_result("游戏功能未开启（需在数据库模式下打开「🎲 猜大小/骰子」开关）")
+            return
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用游戏")
+            return
+        qq = str(event.get_sender_id()).strip()
+        rec = await self.store.get(qq)
+        if not rec:
+            yield event.plain_result("请先绑定 NewAPI 账号（/密码绑定 或 /绑定 <ID>）再参与游戏")
+            return
+        db = await self._db()
+        if db is None:
+            yield event.plain_result("游戏不可用：站点数据库未连接")
+            return
+        u = await db.get_user(rec["user_id"])
+        if not u:
+            await self.store.remove(qq)
+            yield event.plain_result("你绑定的 NewAPI 账号已被站点删除，已自动解绑，请重新绑定")
+            return
+
+        def _num(key, default):
+            v = self._cfg(key, None)
+            if v is None or v == "":
+                return default
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        # 解析投注金额（美元，与抢劫一致的美元语义）
+        try:
+            amount_usd = float(str(amount_str or "").strip())
+        except (TypeError, ValueError):
+            yield event.plain_result("金额格式不正确，请输入数字（美元），例如 /猜大小 大 100")
+            return
+        if amount_usd <= 0:
+            yield event.plain_result("投注金额必须大于 0")
+            return
+
+        min_bet = _num("db.game.dice_min_bet", 0.1)
+        max_bet = _num("db.game.dice_max_bet", 10.0)
+        if amount_usd < min_bet:
+            yield event.plain_result(f"单局最低投注 ${min_bet:.2f}，你下了 ${amount_usd:.2f}")
+            return
+        if amount_usd > max_bet:
+            yield event.plain_result(f"单局最高投注 ${max_bet:.2f}，你下了 ${amount_usd:.2f}")
+            return
+
+        per = int(self._cfg("quota_per_unit", 500000) or 500000)
+        amount = max(1, int(round(amount_usd * per)))
+
+        # 解析选择并确定赔率
+        if game_type == "size":
+            choice = str(choice or "").strip()
+            if choice not in ("大", "小"):
+                yield event.plain_result("请用「大」或「小」下注：/猜大小 大 100")
+                return
+            odds = 1.0
+        else:
+            try:
+                point = int(str(choice or "").strip())
+            except (TypeError, ValueError):
+                yield event.plain_result("请用 1~6 的点数下注：/猜点数 6 100")
+                return
+            if point < 1 or point > 6:
+                yield event.plain_result("点数只能是 1~6")
+                return
+            odds = _num("db.game.guess_point_odds", 5.0)
+
+        # 每日次数 / 流水限制
+        daily_limit = int(_num("db.game.dice_daily_limit", 0))
+        daily_flow = _num("db.game.dice_daily_flow", 0.0)
+        today = time.strftime("%Y-%m-%d")
+        if daily_limit > 0 or daily_flow > 0:
+            game_count = int(rec.get("game_count") or 0)
+            game_flow = float(rec.get("game_flow") or 0)
+            if rec.get("game_day") != today:
+                game_count = 0
+                game_flow = 0.0
+            if daily_limit > 0 and game_count >= daily_limit:
+                yield event.plain_result(f"今日游戏次数已用完（每天最多 {daily_limit} 次），明天再来吧～")
+                return
+            if daily_flow > 0 and game_flow + amount_usd > daily_flow:
+                yield event.plain_result(f"今日投注流水已达上限（每天最多 ${daily_flow:.2f}），明天再来吧～")
+                return
+
+        # 冷却
+        cd = int(_num("db.game.cooldown_seconds", 0))
+        if cd > 0:
+            last = int(rec.get("last_game") or 0)
+            now = time.time()
+            remain = last + cd - now
+            if remain > 0 and not self.debug:
+                yield event.plain_result(f"游戏冷却中，还需 {int(remain)} 秒")
+                return
+
+        # 下注：先原子扣款（余额不足则失败）
+        uid = int(rec["user_id"])
+        if not await db.adjust(uid, -amount, require_balance=True):
+            yield event.plain_result("余额不足，无法下注（下注会先从账户扣除）")
+            return
+
+        # 服务端开奖（防作弊：结果由服务端生成，指令/网页只看结果）
+        if game_type == "size":
+            dice = [random.randint(1, 6) for _ in range(3)]
+            total = sum(dice)
+            big = total >= 11
+            won = (choice == "大") == big
+            result = f"{dice[0]} + {dice[1]} + {dice[2]} = {total}（{'大' if big else '小'}）"
+        else:
+            dice = [random.randint(1, 6)]
+            won = point == dice[0]
+            result = f"{dice[0]}"
+
+        def _mark():
+            if rec.get("game_day") != today:
+                rec["game_day"] = today
+                rec["game_count"] = 1
+                rec["game_flow"] = amount_usd
+            else:
+                rec["game_count"] = int(rec.get("game_count") or 0) + 1
+                rec["game_flow"] = float(rec.get("game_flow") or 0) + amount_usd
+            rec["last_game"] = int(time.time())
+            self.store.data["bindings"][qq] = rec
+            self.store._save_sync()
+
+        if won:
+            payout = max(1, int(round(amount * (1 + odds))))
+            if not await db.adjust(uid, payout):
+                logger.error(f"[newapi] 游戏结算返还失败 uid={uid} payout={payout}")
+                yield event.plain_result("结算异常，请联系管理员核查")
+                return
+            gain = payout - amount
+            async with self.store.lock:
+                _mark()
+            yield event.plain_result(
+                f"🎲 {result}\n🎉 猜中了！本金返还，净赚 {self._fmt_quota(gain)}"
+            )
+        else:
+            async with self.store.lock:
+                _mark()
+            yield event.plain_result(
+                f"🎲 {result}\n😢 猜错了，输掉 {self._fmt_quota(amount)}"
+            )
+
     # ---------- 自助注册 ----------
     @filter.command("注册")
     async def register(self, event: AstrMessageEvent):
@@ -2216,6 +2392,8 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
             "/抢红包 - 抢群内红包（真实入账）\n"
             "/抢劫 @某人 - 抢劫群友余额（真实扣款/入账，需开启抢劫玩法）\n"
             "/排行榜（/排行）[llm|调用|消耗] - 使用排行榜（模型热度/调用次数/额度消耗，渲染成图片）\n"
+            "/猜大小 <大|小> <金额> - 猜三骰点数和（1:1，真实额度，需开启游戏）\n"
+            "/猜点数 <1~6> <金额> - 猜单骰点数（高赔率，真实额度，需开启游戏）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
             "/帮助 - 本命令列表\n"
             "管理员：/查用户 <用户名/数字ID/QQ号/@某人>、/强制解绑 <QQ号>\n"
@@ -2258,6 +2436,8 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
                     "查用户": (self._admin_search_impl, 1),
                     "强制解绑": (self._admin_unbind_impl, 1),
                     "排行榜": (self._rank_impl, 0),
+                    "猜大小": (self._guess_size_impl, 2),
+                    "猜点数": (self._guess_point_impl, 2),
                     "帮助": (self._help_impl, 0),
                 }
                 if cmd not in handlers:

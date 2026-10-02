@@ -226,6 +226,55 @@
             "hint": "目标余额（美元）低于此值时不可被抢；0 = 只要余额>0 就可被抢"
           }
         }
+      },
+      "game_enabled": {
+        "description": "🎲 猜大小/骰子游戏（需数据库）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后支持 /猜大小、/猜点数，投注与盈亏真实扣/加站点余额"
+      },
+      "game": {
+        "description": "🎲 游戏设置",
+        "type": "object",
+        "condition": {
+          "game_enabled": true
+        },
+        "items": {
+          "dice_min_bet": {
+            "description": "单局最低投注（美元）",
+            "type": "float",
+            "default": 0.1
+          },
+          "dice_max_bet": {
+            "description": "单局最高投注（美元）",
+            "type": "float",
+            "default": 10.0
+          },
+          "dice_daily_limit": {
+            "description": "每人每天最多游戏次数",
+            "type": "int",
+            "default": 0,
+            "hint": "0 = 不限；填 N 则每人每天最多玩 N 局"
+          },
+          "dice_daily_flow": {
+            "description": "每人每天最大投注流水（美元）",
+            "type": "float",
+            "default": 0,
+            "hint": "0 = 不限；填 N 则每人每天累计投注不超过 N 美元"
+          },
+          "guess_point_odds": {
+            "description": "猜点数赔率（猜对净赚倍数）",
+            "type": "float",
+            "default": 5.0,
+            "hint": "5 = 猜对净赚 5 倍本金（本金另返还），单骰命中概率 1/6，公平赔率"
+          },
+          "cooldown_seconds": {
+            "description": "每局冷却时间（秒）",
+            "type": "int",
+            "default": 0,
+            "hint": "0 = 不限；填 N 则相邻两局需间隔 N 秒"
+          }
+        }
       }
     }
   },
