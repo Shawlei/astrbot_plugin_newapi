@@ -1722,7 +1722,7 @@ class NewAPIPlugin(Star):
         if not self._is_group(event):
             yield event.plain_result("请在群聊中使用股市")
             return
-        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        base = (self._cfg("game_server_url", "") or "").strip().rstrip("/")
         if not base:
             yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写游戏服务地址")
             return
@@ -1746,7 +1746,7 @@ class NewAPIPlugin(Star):
         if not self._is_group(event):
             yield event.plain_result("请在群聊中使用持仓查询")
             return
-        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        base = (self._cfg("game_server_url", "") or "").strip().rstrip("/")
         if not base:
             yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写游戏服务地址")
             return
@@ -1840,7 +1840,7 @@ class NewAPIPlugin(Star):
         if not self._is_group(event):
             yield event.plain_result("请在群聊中使用股市排行榜")
             return
-        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        base = (self._cfg("game_server_url", "") or "").strip().rstrip("/")
         if not base:
             yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写游戏服务地址")
             return
@@ -1884,7 +1884,7 @@ class NewAPIPlugin(Star):
         if not self._is_group(event):
             yield event.plain_result("请在群聊中使用行情")
             return
-        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        base = (self._cfg("game_server_url", "") or "").strip().rstrip("/")
         if not base:
             yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写游戏服务地址")
             return
@@ -1935,15 +1935,12 @@ class NewAPIPlugin(Star):
         urls = {"xiangqi": "xiangqi.html", "gomoku": "gomoku.html"}
         cmds = {"xiangqi": "象棋对战", "gomoku": "五子棋对战"}
 
-        if not self._cfg("battle_enabled", False):
-            yield event.plain_result("对战平台未开启（可在插件配置打开 battle_enabled）")
-            return
         if not self._is_group(event):
             yield event.plain_result("请在群聊中使用对战")
             return
-        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        base = (self._cfg("game_server_url", "") or "").strip().rstrip("/")
         if not base:
-            yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写对战游戏服务地址")
+            yield event.plain_result("游戏服务未配置：请在插件配置里填写「游戏服务地址」")
             return
 
         qq = str(event.get_sender_id()).strip()
@@ -1952,18 +1949,14 @@ class NewAPIPlugin(Star):
             yield event.plain_result("请先绑定 NewAPI 账号（/密码绑定 或 /绑定 <ID>）再参与对战")
             return
 
-        # 解析押注（美元，自由押注）
-        min_bet = float(self._cfg("battle.battle_min_bet", 10) or 10)
-        max_bet = float(self._cfg("battle.battle_max_bet", 200) or 200)
+        # 押注可选（美元）：未填/非法则传 None，由游戏服务端决定默认值与上下限校验
+        bet_usd = None
         try:
-            bet_usd = float(str(bet or "").strip())
+            b = float(str(bet or "").strip())
+            if b > 0:
+                bet_usd = b
         except (TypeError, ValueError):
-            bet_usd = 0.0
-        if bet_usd <= 0:
-            bet_usd = float(self._cfg("battle.battle_default_bet", 10) or 10)
-        if bet_usd < min_bet or bet_usd > max_bet:
-            yield event.plain_result(f"押注金额需在 ${min_bet:g}~${max_bet:g} 美元之间")
-            return
+            pass
 
         gid = str(event.get_group_id())
         player = {"qq": qq, "name": rec.get("username") or qq, "userId": int(rec["user_id"])}
@@ -1976,15 +1969,20 @@ class NewAPIPlugin(Star):
             yield event.plain_result(str(data.get("error") or "游戏服务不可用，请稍后再试"))
             return
 
+        room = data.get("room") or {}
+        # 实际押注以服务端返回为准（未填押注时服务端会用其默认值）
+        final_bet = room.get("bet")
+        if final_bet is None:
+            final_bet = bet_usd
+
         if data.get("code") == "created":
             yield event.plain_result(
-                f"🎮 {names[game_type]}对战(1/2)，押注 ${bet_usd:g}，等待对手加入\n"
+                f"🎮 {names[game_type]}对战(1/2)，押注 ${final_bet:g}，等待对手加入\n"
                 f"对手发送 %{cmds[game_type]} 即可匹配开战"
             )
             return
 
         # 已有等待房间
-        room = data.get("room") or {}
         rid = room.get("id")
         if not rid:
             yield event.plain_result("创建房间失败，请稍后再试")
@@ -2011,22 +2009,22 @@ class NewAPIPlugin(Star):
 
         await self._send_private(
             event, str(r1.get("qq")),
-            f"⚔️ {names[game_type]}对战匹配成功！\n对手：{r2.get('name')}\n押注：${bet_usd:g}\n点击开战：{link1}",
+            f"⚔️ {names[game_type]}对战匹配成功！\n对手：{r2.get('name')}\n押注：${final_bet:g}\n点击开战：{link1}",
         )
         await self._send_private(
             event, str(r2.get("qq")),
-            f"⚔️ {names[game_type]}对战匹配成功！\n对手：{r1.get('name')}\n押注：${bet_usd:g}\n点击开战：{link2}",
+            f"⚔️ {names[game_type]}对战匹配成功！\n对手：{r1.get('name')}\n押注：${final_bet:g}\n点击开战：{link2}",
         )
 
         yield event.plain_result(
             f"⚔️ {names[game_type]}对战匹配成功！\n"
-            f"{r1.get('name')} vs {r2.get('name')}，押注 ${bet_usd:g}\n"
+            f"{r1.get('name')} vs {r2.get('name')}，押注 ${final_bet:g}\n"
             f"对战链接已私聊发送，双方点击进入即可开战"
         )
 
         # 后台轮询对局结果，结束后回群播报
         asyncio.create_task(
-            self._battle_poll(base, rid, event.bot, gid, game_type, bet_usd, r1, r2)
+            self._battle_poll(base, rid, event.bot, gid, game_type, final_bet, r1, r2)
         )
 
     async def _battle_poll(self, base, rid, bot, gid, game_type, bet_usd, p1, p2):
@@ -2109,15 +2107,12 @@ class NewAPIPlugin(Star):
 
     async def _hall_impl(self, event: AstrMessageEvent):
         """游戏大厅：群发大厅链接，并启动后台轮询处理网页发起的邀请/接受"""
-        if not self._cfg("battle_enabled", False):
-            yield event.plain_result("对战平台未开启（可在插件配置打开 battle_enabled）")
-            return
         if not self._is_group(event):
             yield event.plain_result("请在群聊中使用游戏大厅")
             return
-        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        base = (self._cfg("game_server_url", "") or "").strip().rstrip("/")
         if not base:
-            yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写对战游戏服务地址")
+            yield event.plain_result("游戏服务未配置：请在插件配置里填写「游戏服务地址」")
             return
         gid = str(event.get_group_id())
         link = f"{base}/?gid={gid}"
