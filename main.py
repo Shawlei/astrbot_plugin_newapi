@@ -1804,6 +1804,132 @@ class NewAPIPlugin(Star):
         )
         yield event.plain_result("\n".join(lines))
 
+    @filter.command("股票帮助", alias={"股票help", "股市帮助", "股票菜单", "股票命令", "股市命令"})
+    async def stock_help(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """模拟股市命令帮助：列出所有股票相关命令"""
+        async for r in self._stock_help_impl(event):
+            yield r
+
+    async def _stock_help_impl(self, event: AstrMessageEvent):
+        yield event.plain_result(
+            "📈 模拟股市命令：\n"
+            "/股票（/股市）- 获取行情页链接，登录后看行情、买卖股票\n"
+            "/持仓（/我的持仓）- 查询自己绑定账号的持仓与盈亏\n"
+            "/行情（/大盘）- 大盘指数 + 涨跌家数 + 各股现价涨跌一览\n"
+            "/股票排行（/市值排行）- 按持仓市值排名的股市排行榜\n"
+            "/股票帮助 - 本命令列表\n\n"
+            "交易规则：T+0 当日可买卖 / T+1 次日可卖；涨停不可买、跌停不可卖；"
+            "涨=红 🔴 跌=绿 🟢。行情页：/股票"
+        )
+
+    @filter.command("股票排行", alias={"市值排行", "股票排行榜", "股市排行", "股市排行榜"})
+    async def stock_rank(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """模拟股市排行榜：按持仓市值排名"""
+        async for r in self._stock_rank_impl(event):
+            yield r
+
+    async def _stock_rank_impl(self, event: AstrMessageEvent):
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用股市排行榜")
+            return
+        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        if not base:
+            yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写游戏服务地址")
+            return
+        ok, data = await self._game_api(base, "GET", "/api/market/leaderboard?limit=20")
+        if not ok or not isinstance(data, dict):
+            err = "游戏服务不可用"
+            if isinstance(data, dict):
+                err = str(data.get("error") or err)
+            yield event.plain_result(f"排行榜查询失败：{err}")
+            return
+        rows = data.get("list") or []
+        if not rows:
+            yield event.plain_result("🏆 股市排行榜\n\n暂无持仓记录。发送 /股票 买入后即可上榜。")
+            return
+        lines = ["🏆 股市排行榜（按持仓市值）\n"]
+        medals = ["🥇", "🥈", "🥉"]
+        for i, r in enumerate(rows):
+            name = r.get("name") or f"用户{r.get('userId')}"
+            mkt = float(r.get("marketValue") or 0)
+            pnl = float(r.get("pnl") or 0)
+            stocks = r.get("stocks") or 0
+            sign = "+" if pnl >= 0 else ""
+            arrow = "🔴" if pnl > 0 else ("🟢" if pnl < 0 else "⚪")
+            medal = medals[i] if i < 3 else f"{i + 1}."
+            lines.append(
+                f"{medal} {name} · {stocks} 只 · 市值 ${mkt:.2f} · {arrow} 盈亏 {sign}{pnl:.2f}"
+            )
+        yield event.plain_result("\n".join(lines))
+
+    @filter.command("行情", alias={"大盘", "股市行情", "大盘行情", "股票行情一览"})
+    async def market_overview(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """模拟股市大盘：指数 + 涨跌家数 + 各股现价涨跌一览"""
+        async for r in self._market_overview_impl(event):
+            yield r
+
+    async def _market_overview_impl(self, event: AstrMessageEvent):
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用行情")
+            return
+        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        if not base:
+            yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写游戏服务地址")
+            return
+        ok, data = await self._game_api(base, "GET", "/api/market/stocks")
+        if not ok or not isinstance(data, dict):
+            err = "游戏服务不可用"
+            if isinstance(data, dict):
+                err = str(data.get("error") or err)
+            yield event.plain_result(f"行情查询失败：{err}")
+            return
+        idx = data.get("index") or {}
+        breadth = data.get("breadth") or {}
+        lst = data.get("list") or []
+        if not lst:
+            yield event.plain_result("行情数据为空，请稍后再试")
+            return
+        idx_val = float(idx.get("value") or 0)
+        idx_pct = float(idx.get("changePct") or 0)
+        idx_sign = "+" if idx_pct >= 0 else ""
+        idx_arrow = "🔴" if idx_pct > 0 else ("🟢" if idx_pct < 0 else "⚪")
+        up = breadth.get("up", 0)
+        down = breadth.get("down", 0)
+        flat = breadth.get("flat", 0)
+        lines = [
+            f"{idx_arrow} SIM 综合指数 {idx_val:.2f}（{idx_sign}{idx_pct:.2f}%）",
+            f"上涨 {up} · 平盘 {flat} · 下跌 {down}",
+            "",
+        ]
+        for s in lst:
+            code = s.get("code") or ""
+            name = s.get("name") or code
+            sector = s.get("sector") or ""
+            price = float(s.get("price") or 0)
+            chg = float(s.get("changePct") or 0)
+            t0 = s.get("t0")
+            tag = "T+0" if t0 else "T+1"
+            lock = s.get("lock")
+            sign = "+" if chg >= 0 else ""
+            arrow = "🔴" if chg > 0 else ("🟢" if chg < 0 else "⚪")
+            lock_txt = " · 涨停" if lock == "up" else (" · 跌停" if lock == "down" else "")
+            lines.append(
+                f"{arrow} {name}（{code}·{sector}·{tag}）${price:.2f} {sign}{chg:.2f}%{lock_txt}"
+            )
+        yield event.plain_result("\n".join(lines))
+
     async def _battle_impl(self, event: AstrMessageEvent, game_type: str, bet: str = ""):
         names = {"xiangqi": "中国象棋", "gomoku": "五子棋"}
         urls = {"xiangqi": "xiangqi.html", "gomoku": "gomoku.html"}
@@ -2816,6 +2942,9 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
             "/游戏大厅（/大厅）- 群发游戏大厅链接：单机小游戏(老虎机/21点/24点)、模拟股市、象棋/五子棋网页对战（NewAPI 登录，需开启对战平台）\n"
             "/股票（/股市）- 群发模拟股市行情页链接（看行情、买卖股票，NewAPI 登录）\n"
             "/持仓（/我的持仓）- 查询自己绑定账号在模拟股市的持仓与盈亏\n"
+            "/行情（/大盘）- 大盘指数 + 涨跌家数 + 各股现价涨跌一览\n"
+            "/股票排行（/市值排行）- 按持仓市值排名的股市排行榜\n"
+            "/股票帮助 - 模拟股市命令列表\n"
             "/象棋对战 [押注美元] - 发起象棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/五子棋对战 [押注美元] - 发起五子棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
@@ -2860,6 +2989,24 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
                 # 持仓查询
                 if cmd in ("持仓", "我的持仓", "股票持仓", "持仓查询", "我的股票"):
                     async for r in self._holdings_impl(event):
+                        yield r
+                    event.stop_event()
+                    return
+                # 股票帮助
+                if cmd in ("股票帮助", "股票help", "股市帮助", "股票菜单", "股票命令", "股市命令"):
+                    async for r in self._stock_help_impl(event):
+                        yield r
+                    event.stop_event()
+                    return
+                # 股票排行榜
+                if cmd in ("股票排行", "市值排行", "股票排行榜", "股市排行", "股市排行榜"):
+                    async for r in self._stock_rank_impl(event):
+                        yield r
+                    event.stop_event()
+                    return
+                # 大盘行情
+                if cmd in ("行情", "大盘", "股市行情", "大盘行情", "股票行情一览"):
+                    async for r in self._market_overview_impl(event):
                         yield r
                     event.stop_event()
                     return
