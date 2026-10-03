@@ -3,6 +3,13 @@
 所有重要变更都记录在此文件中。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [0.0.31] - 2026-10-03
+
+### 修复
+- 🐛 修复对战匹配成功但「不私发对战链接」的问题：根因是 `_game_api` 不检查 HTTP 状态码，join 因「余额不足」返回 400 时仍被当作成功，导致 `room.players` 取空、私聊 QQ 变成 `None` 而报 `invalid literal for int() with base 10: 'None'`。
+- `_game_api` 现在对 4xx/5xx 返回 `(False, data)`，`_battle_impl` join 后校验 `code == "started"`，失败时把服务端业务错误（如余额不足）如实抛给群友。
+- 游戏服务 `/api/room` 创建房间前预检发起方余额，余额不足立即提示（不再等到对手加入才失败）。
+
 ## [0.0.30] - 2026-10-03
 
 ### 新增

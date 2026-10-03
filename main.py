@@ -1797,8 +1797,11 @@ class NewAPIPlugin(Star):
             return
 
         ok2, jd = await self._game_api(base, "POST", f"/api/room/{rid}/join", {"player": player})
-        if not ok2:
-            yield event.plain_result(str(jd.get("error") or "加入失败，请稍后再试"))
+        if not ok2 or not isinstance(jd, dict) or jd.get("code") != "started":
+            err = "加入失败，请稍后再试"
+            if isinstance(jd, dict) and jd.get("error"):
+                err = str(jd["error"])
+            yield event.plain_result(err)
             return
 
         jroom = jd.get("room") or {}
@@ -1866,15 +1869,21 @@ class NewAPIPlugin(Star):
             logger.error(f"[newapi] 对战轮询异常: {e}")
 
     async def _game_api(self, base: str, method: str, path: str, body: dict = None):
-        """调用游戏服务 HTTP API，返回 (ok, data)"""
+        """调用游戏服务 HTTP API，返回 (ok, data)。HTTP 4xx/5xx 视为失败，方便上抛业务错误。"""
         url = base + path
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
                 if method == "POST":
                     async with s.post(url, json=body) as r:
-                        return True, (await r.json(content_type=None))
+                        data = await r.json(content_type=None)
+                        if r.status >= 400:
+                            return False, data
+                        return True, data
                 async with s.get(url) as r:
-                    return True, (await r.json(content_type=None))
+                    data = await r.json(content_type=None)
+                    if r.status >= 400:
+                        return False, data
+                    return True, data
         except Exception as e:
             logger.error(f"[newapi] 游戏服务请求失败 {url}: {e}")
             return False, {"error": "游戏服务不可用"}
