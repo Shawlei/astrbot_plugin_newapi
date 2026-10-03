@@ -1732,6 +1732,78 @@ class NewAPIPlugin(Star):
             f"点链接登录 NewAPI 账号即可看行情、买卖股票（涨=红 / 跌=绿，实时刷新）"
         )
 
+    @filter.command("持仓", alias={"我的持仓", "股票持仓", "持仓查询", "我的股票"})
+    async def stock_holdings(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """查询自己绑定的 NewAPI 账号在模拟股市的持仓与盈亏"""
+        async for r in self._holdings_impl(event):
+            yield r
+
+    async def _holdings_impl(self, event: AstrMessageEvent):
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用持仓查询")
+            return
+        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        if not base:
+            yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写游戏服务地址")
+            return
+        qq = str(event.get_sender_id()).strip()
+        rec = await self.store.get(qq)
+        if not rec:
+            yield event.plain_result("你还没有绑定 NewAPI 账号，请先 /密码绑定 或 /绑定 <ID>")
+            return
+        uid = rec.get("user_id")
+        if uid is None:
+            yield event.plain_result("绑定记录异常（缺少 user_id），请 /解绑 后重新绑定")
+            return
+        ok, data = await self._game_api(base, "GET", f"/api/market/holdings/by-user?userId={int(uid)}")
+        if not ok or not isinstance(data, dict):
+            err = "游戏服务不可用"
+            if isinstance(data, dict):
+                err = str(data.get("error") or err)
+            yield event.plain_result(f"持仓查询失败：{err}")
+            return
+        rows = data.get("list") or []
+        username = rec.get("username") or str(qq)
+        if not rows:
+            yield event.plain_result(
+                f"📊 {username} 的股票持仓\n\n"
+                f"暂无持仓。发送 /股票 进入行情页，登录后即可买入股票。"
+            )
+            return
+        lines = [f"📊 {username} 的股票持仓\n"]
+        for r in rows:
+            name = r.get("name") or r.get("code")
+            code = r.get("code") or ""
+            price = float(r.get("price") or 0)
+            shares = float(r.get("shares") or 0)
+            mkt = float(r.get("marketValue") or 0)
+            cost = float(r.get("costUsd") or 0)
+            pnl = float(r.get("pnl") or 0)
+            pnl_pct = float(r.get("pnlPct") or 0)
+            available = float(r.get("available") or 0)
+            t0 = r.get("t0")
+            tag = "T+0" if t0 else "T+1"
+            sign = "+" if pnl >= 0 else ""
+            arrow = "🔴" if pnl > 0 else ("🟢" if pnl < 0 else "⚪")
+            lines.append(
+                f"{arrow} {name}（{code} · {tag}）\n"
+                f"　持仓 {shares:.4f} 股 · 可卖 {available:.4f} · 现价 ${price:.2f}\n"
+                f"　市值 ${mkt:.2f} · 成本 ${cost:.2f} · 盈亏 {sign}{pnl:.2f}（{sign}{pnl_pct:.2f}%）"
+            )
+        tm = float(data.get("totalMarketValue") or 0)
+        tc = float(data.get("totalCost") or 0)
+        tp = float(data.get("totalPnl") or 0)
+        tsign = "+" if tp >= 0 else ""
+        tarrow = "🔴" if tp > 0 else ("🟢" if tp < 0 else "⚪")
+        lines.append(
+            f"\n{tarrow} 合计：市值 ${tm:.2f} · 成本 ${tc:.2f} · 盈亏 {tsign}{tp:.2f}"
+        )
+        yield event.plain_result("\n".join(lines))
+
     async def _battle_impl(self, event: AstrMessageEvent, game_type: str, bet: str = ""):
         names = {"xiangqi": "中国象棋", "gomoku": "五子棋"}
         urls = {"xiangqi": "xiangqi.html", "gomoku": "gomoku.html"}
@@ -2743,6 +2815,7 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
             "/猜点数 <1~6> <金额> - 猜单骰点数（高赔率，真实额度，需开启游戏）\n"
             "/游戏大厅（/大厅）- 群发游戏大厅链接：单机小游戏(老虎机/21点/24点)、模拟股市、象棋/五子棋网页对战（NewAPI 登录，需开启对战平台）\n"
             "/股票（/股市）- 群发模拟股市行情页链接（看行情、买卖股票，NewAPI 登录）\n"
+            "/持仓（/我的持仓）- 查询自己绑定账号在模拟股市的持仓与盈亏\n"
             "/象棋对战 [押注美元] - 发起象棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/五子棋对战 [押注美元] - 发起五子棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
@@ -2781,6 +2854,12 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
                 # 模拟股市
                 if cmd in ("股票", "股市", "模拟股市", "股票行情", "看盘"):
                     async for r in self._stock_impl(event):
+                        yield r
+                    event.stop_event()
+                    return
+                # 持仓查询
+                if cmd in ("持仓", "我的持仓", "股票持仓", "持仓查询", "我的股票"):
+                    async for r in self._holdings_impl(event):
                         yield r
                     event.stop_event()
                     return
