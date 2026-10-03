@@ -1708,6 +1708,30 @@ class NewAPIPlugin(Star):
         async for r in self._hall_impl(event):
             yield r
 
+    @filter.command("股票", alias={"股市", "模拟股市", "股票行情", "看盘"})
+    async def stock_market(self, event: AstrMessageEvent):
+        if not self._cfg("slash_enabled", True):
+            return
+        if not self._group_allowed(event):
+            return
+        """模拟股市：群发市场页链接，群友点链接登录后看行情、买卖股票"""
+        async for r in self._stock_impl(event):
+            yield r
+
+    async def _stock_impl(self, event: AstrMessageEvent):
+        if not self._is_group(event):
+            yield event.plain_result("请在群聊中使用股市")
+            return
+        base = (self._cfg("battle.game_server_url", "") or "").strip().rstrip("/")
+        if not base:
+            yield event.plain_result("游戏服务未配置：请在插件配置的「对战平台设置」里填写游戏服务地址")
+            return
+        link = f"{base}/market.html"
+        yield event.plain_result(
+            f"📈 模拟股市\n{link}\n\n"
+            f"点链接登录 NewAPI 账号即可看行情、买卖股票（涨=红 / 跌=绿，实时刷新）"
+        )
+
     async def _battle_impl(self, event: AstrMessageEvent, game_type: str, bet: str = ""):
         names = {"xiangqi": "中国象棋", "gomoku": "五子棋"}
         urls = {"xiangqi": "xiangqi.html", "gomoku": "gomoku.html"}
@@ -2709,6 +2733,7 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
             "/猜大小 <大|小> <金额> - 猜三骰点数和（1:1，真实额度，需开启游戏）\n"
             "/猜点数 <1~6> <金额> - 猜单骰点数（高赔率，真实额度，需开启游戏）\n"
             "/游戏大厅（/大厅）- 群发游戏大厅链接：单机小游戏(老虎机/21点/24点)、模拟股市、象棋/五子棋网页对战（NewAPI 登录，需开启对战平台）\n"
+            "/股票（/股市）- 群发模拟股市行情页链接（看行情、买卖股票，NewAPI 登录）\n"
             "/象棋对战 [押注美元] - 发起象棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/五子棋对战 [押注美元] - 发起五子棋对战，匹配到对手后私聊发送网页链接（真实额度）\n"
             "/取消绑定 - 取消进行中的 ID 绑定\n"
@@ -2741,6 +2766,12 @@ body { font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; bac
                 # 游戏大厅
                 if cmd in ("游戏大厅", "大厅", "游戏中心"):
                     async for r in self._hall_impl(event):
+                        yield r
+                    event.stop_event()
+                    return
+                # 模拟股市
+                if cmd in ("股票", "股市", "模拟股市", "股票行情", "看盘"):
+                    async for r in self._stock_impl(event):
                         yield r
                     event.stop_event()
                     return
